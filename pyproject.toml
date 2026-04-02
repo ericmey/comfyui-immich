@@ -1,6 +1,6 @@
 [project]
 name = "comfyui-immich"
-version = "0.2.3"
+version = "0.2.4"
 description = "ComfyUI custom nodes for Immich integration — upload, metadata, album management"
 readme = "README.md"
 license = {text = "MIT"}
