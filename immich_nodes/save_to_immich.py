@@ -74,6 +74,7 @@ class SaveToImmich:
                 "images": ("IMAGE",),
             },
             "optional": {
+                "character": ("STRING", {"default": ""}),
                 "description": ("STRING", {"default": "", "multiline": True}),
                 "album_id": ("STRING", {"default": ""}),
                 "filename_prefix": ("STRING", {"default": "ComfyUI"}),
@@ -185,12 +186,14 @@ class SaveToImmich:
         }
         self._api_request(f"{immich_url}/api/albums/{album_id}/assets", "PUT", headers, body)
 
-    def _build_auto_description(self, prompt):
+    def _build_auto_description(self, prompt, character=""):
         """Build a description from the ComfyUI workflow prompt data."""
         if not prompt:
-            return ""
+            return f"Character: {character}" if character else ""
 
         lines = []
+        if character:
+            lines.append(f"Character: {character}")
         nodes = prompt if isinstance(prompt, dict) else {}
 
         # Find key nodes by class type
@@ -242,6 +245,7 @@ class SaveToImmich:
     def upload(
         self,
         images,
+        character="",
         description="",
         album_id="",
         filename_prefix="ComfyUI",
@@ -251,8 +255,8 @@ class SaveToImmich:
         immich_url, api_key = self._get_config()
 
         # Auto-build description from prompt data when none provided
-        if not description and prompt:
-            description = self._build_auto_description(prompt)
+        if not description:
+            description = self._build_auto_description(prompt, character=character)
 
         results = []
         batch_size = images.shape[0]
