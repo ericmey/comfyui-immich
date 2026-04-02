@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from nodes.save_to_immich import SaveToImmich, _load_env, _multipart_encode
+from immich_nodes.save_to_immich import SaveToImmich, _load_env, _multipart_encode
 
 # --- _load_env ---
 
@@ -105,12 +105,12 @@ class TestSaveToImmich:
     def test_get_config_raises_without_env(self, tmp_path):
         node = SaveToImmich()
         with (
-            patch("nodes.save_to_immich.os.path.dirname", return_value=str(tmp_path)),
+            patch("immich_nodes.save_to_immich.os.path.dirname", return_value=str(tmp_path)),
             pytest.raises(ValueError, match="IMMICH_URL not set"),
         ):
             node._get_config()
 
-    @patch("nodes.save_to_immich.urlopen")
+    @patch("immich_nodes.save_to_immich.urlopen")
     def test_upload_success(self, mock_urlopen):
         """Full upload flow with mocked HTTP."""
         node = SaveToImmich()

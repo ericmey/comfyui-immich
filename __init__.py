@@ -1,4 +1,4 @@
-from nodes.save_to_immich import SaveToImmich
+from immich_nodes.save_to_immich import SaveToImmich
 
 NODE_CLASS_MAPPINGS = {
     "SaveToImmich": SaveToImmich,
