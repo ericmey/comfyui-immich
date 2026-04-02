@@ -28,13 +28,15 @@ jobs:
 
       - name: Determine bump type
         id: bump
+        env:
+          COMMIT_MSG: ${{ github.event.head_commit.message }}
         run: |
-          MSG="${{ github.event.head_commit.message }}"
-          if echo "$MSG" | grep -qE '^feat!:|BREAKING CHANGE'; then
+          FIRST_LINE=$(echo "$COMMIT_MSG" | head -n1)
+          if echo "$FIRST_LINE" | grep -qE '^feat!:|BREAKING CHANGE'; then
             echo "type=major" >> "$GITHUB_OUTPUT"
-          elif echo "$MSG" | grep -qE '^feat(\(.*\))?:'; then
+          elif echo "$FIRST_LINE" | grep -qE '^feat(\(.*\))?:'; then
             echo "type=minor" >> "$GITHUB_OUTPUT"
-          elif echo "$MSG" | grep -qE '^fix(\(.*\))?:'; then
+          elif echo "$FIRST_LINE" | grep -qE '^fix(\(.*\))?:'; then
             echo "type=patch" >> "$GITHUB_OUTPUT"
           else
             echo "type=patch" >> "$GITHUB_OUTPUT"
