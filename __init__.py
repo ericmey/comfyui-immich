@@ -1,4 +1,7 @@
-from immich_nodes.save_to_immich import SaveToImmich
+try:
+    from .immich_nodes.save_to_immich import SaveToImmich
+except ImportError:
+    from immich_nodes.save_to_immich import SaveToImmich
 
 NODE_CLASS_MAPPINGS = {
     "SaveToImmich": SaveToImmich,
