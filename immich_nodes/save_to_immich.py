@@ -185,6 +185,60 @@ class SaveToImmich:
         }
         self._api_request(f"{immich_url}/api/albums/{album_id}/assets", "PUT", headers, body)
 
+    def _build_auto_description(self, prompt):
+        """Build a description from the ComfyUI workflow prompt data."""
+        if not prompt:
+            return ""
+
+        lines = []
+        nodes = prompt if isinstance(prompt, dict) else {}
+
+        # Find key nodes by class type
+        positive_text = ""
+        negative_text = ""
+        checkpoint = ""
+        seed = ""
+        sampler = ""
+        steps = ""
+        cfg = ""
+
+        for node in nodes.values():
+            class_type = node.get("class_type", "")
+            inputs = node.get("inputs", {})
+            meta_title = node.get("_meta", {}).get("title", "")
+
+            if class_type == "CLIPTextEncode":
+                text = inputs.get("text", "")
+                is_positive = meta_title in ("@prompt", "@positive") or (
+                    not positive_text and meta_title not in ("@negative", "Hand Positive Prompt")
+                )
+                if is_positive and text and meta_title != "Hand Positive Prompt":
+                    positive_text = positive_text or text
+                if meta_title == "@negative":
+                    negative_text = text
+
+            elif class_type == "CheckpointLoaderSimple":
+                checkpoint = inputs.get("ckpt_name", "")
+
+            elif class_type == "KSampler":
+                seed = str(inputs.get("seed", ""))
+                sampler = inputs.get("sampler_name", "")
+                steps = str(inputs.get("steps", ""))
+                cfg = str(inputs.get("cfg", ""))
+
+        if checkpoint:
+            lines.append(f"Checkpoint: {checkpoint}")
+        if sampler:
+            lines.append(f"Sampler: {sampler} | Steps: {steps} | CFG: {cfg}")
+        if seed:
+            lines.append(f"Seed: {seed}")
+        if positive_text:
+            lines.append(f"\nPositive: {positive_text}")
+        if negative_text:
+            lines.append(f"\nNegative: {negative_text}")
+
+        return "\n".join(lines)
+
     def upload(
         self,
         images,
@@ -195,6 +249,10 @@ class SaveToImmich:
         extra_pnginfo=None,
     ):
         immich_url, api_key = self._get_config()
+
+        # Auto-build description from prompt data when none provided
+        if not description and prompt:
+            description = self._build_auto_description(prompt)
 
         results = []
         batch_size = images.shape[0]
