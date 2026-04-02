@@ -18,7 +18,7 @@ def _load_env(env_path):
     env = {}
     if not os.path.isfile(env_path):
         return env
-    with open(env_path, "r") as f:
+    with open(env_path) as f:
         for line in f:
             line = line.strip()
             if not line or line.startswith("#"):
@@ -183,9 +183,7 @@ class SaveToImmich:
             "Content-Type": "application/json",
             "Accept": "application/json",
         }
-        self._api_request(
-            f"{immich_url}/api/albums/{album_id}/assets", "PUT", headers, body
-        )
+        self._api_request(f"{immich_url}/api/albums/{album_id}/assets", "PUT", headers, body)
 
     def upload(
         self,
@@ -217,51 +215,32 @@ class SaveToImmich:
                 asset_id = self._upload_asset(immich_url, api_key, png_bytes, filename)
                 if not asset_id:
                     print(
-                        f"[SaveToImmich] WARNING: Upload {i + 1}/{batch_size} "
-                        "returned no asset ID"
+                        f"[SaveToImmich] WARNING: Upload {i + 1}/{batch_size} returned no asset ID"
                     )
                     continue
 
-                print(
-                    f"[SaveToImmich] Uploaded {i + 1}/{batch_size}: "
-                    f"{filename} -> {asset_id}"
-                )
+                print(f"[SaveToImmich] Uploaded {i + 1}/{batch_size}: {filename} -> {asset_id}")
 
                 # Set Immich description (visible in the UI)
                 if description:
                     try:
-                        self._set_description(
-                            immich_url, api_key, asset_id, description
-                        )
+                        self._set_description(immich_url, api_key, asset_id, description)
                     except (HTTPError, URLError) as e:
-                        print(
-                            f"[SaveToImmich] WARNING: Failed to set description: {e}"
-                        )
+                        print(f"[SaveToImmich] WARNING: Failed to set description: {e}")
 
                 # Add to album
                 if album_id:
                     try:
                         self._add_to_album(immich_url, api_key, album_id, asset_id)
                     except (HTTPError, URLError) as e:
-                        print(
-                            f"[SaveToImmich] WARNING: Failed to add to album: {e}"
-                        )
+                        print(f"[SaveToImmich] WARNING: Failed to add to album: {e}")
 
                 results.append({"asset_id": asset_id, "filename": filename})
 
             except (HTTPError, URLError) as e:
-                print(
-                    f"[SaveToImmich] ERROR: Failed to upload image "
-                    f"{i + 1}/{batch_size}: {e}"
-                )
+                print(f"[SaveToImmich] ERROR: Failed to upload image {i + 1}/{batch_size}: {e}")
             except Exception as e:
-                print(
-                    f"[SaveToImmich] ERROR: Unexpected error on image "
-                    f"{i + 1}/{batch_size}: {e}"
-                )
+                print(f"[SaveToImmich] ERROR: Unexpected error on image {i + 1}/{batch_size}: {e}")
 
-        print(
-            f"[SaveToImmich] Done. {len(results)}/{batch_size} "
-            "image(s) uploaded successfully."
-        )
+        print(f"[SaveToImmich] Done. {len(results)}/{batch_size} image(s) uploaded successfully.")
         return {"ui": {"images": results}}

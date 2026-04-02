@@ -1,0 +1,42 @@
+[project]
+name = "comfyui-immich"
+version = "0.1.0"
+description = "ComfyUI custom nodes for Immich integration — upload, metadata, album management"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+authors = [
+    {name = "Eric Meyer"},
+]
+keywords = ["comfyui", "immich", "image-upload", "custom-node"]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "ruff>=0.4",
+    "mypy>=1.8",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "SIM", "RUF"]
+ignore = ["N999"]  # ComfyUI requires hyphenated folder names
+
+[tool.ruff.lint.per-file-ignores]
+"nodes/*" = ["N802"]  # ComfyUI requires uppercase method names (INPUT_TYPES, etc.)
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+
+[[tool.mypy.overrides]]
+module = ["PIL.*", "numpy.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
