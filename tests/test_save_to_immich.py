@@ -8,7 +8,12 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from immich_nodes.save_to_immich import SaveToImmich, _load_env, _multipart_encode
+from immich_nodes.save_to_immich import (
+    SaveToImmich,
+    _load_env,
+    _multipart_encode,
+    _normalize_immich_url,
+)
 
 # --- _load_env ---
 
@@ -52,6 +57,14 @@ class TestMultipartEncode:
         assert b"test.png" in body
         assert b"\x89PNG" in body
         assert "multipart/form-data; boundary=" in content_type
+
+
+class TestNormalizeImmichUrl:
+    def test_strips_trailing_slash(self):
+        assert _normalize_immich_url("https://immich.test/") == "https://immich.test"
+
+    def test_accepts_api_url(self):
+        assert _normalize_immich_url("https://immich.test/api/") == "https://immich.test"
 
 
 # --- SaveToImmich ---
@@ -110,6 +123,47 @@ class TestSaveToImmich:
         ):
             node._get_config()
 
+    def test_get_config_allows_environment_override(self, tmp_path):
+        node = SaveToImmich()
+        env_file = tmp_path / ".env"
+        env_file.write_text("IMMICH_URL=https://from-file.test\nIMMICH_API_KEY=file-key\n")
+
+        with (
+            patch("immich_nodes.save_to_immich.os.path.dirname", return_value=str(tmp_path)),
+            patch.dict(
+                "immich_nodes.save_to_immich.os.environ",
+                {
+                    "IMMICH_URL": "https://from-env.test/api/",
+                    "IMMICH_API_KEY": " env-key ",
+                },
+            ),
+        ):
+            assert node._get_config() == ("https://from-env.test", "env-key")
+
+    @patch("immich_nodes.save_to_immich.urlopen")
+    def test_api_request_allows_empty_json_response(self, mock_urlopen):
+        node = SaveToImmich()
+        empty_resp = MagicMock()
+        empty_resp.read.return_value = b""
+        empty_resp.__enter__ = lambda s: s
+        empty_resp.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = empty_resp
+
+        result = node._api_request("https://immich.test/api/no-content", "PUT", {})
+
+        assert result == {}
+
+    def test_save_comfy_preview_writes_output_file(self, tmp_path):
+        node = SaveToImmich()
+        fake_folder_paths = MagicMock()
+        fake_folder_paths.get_output_directory.return_value = str(tmp_path)
+
+        with patch("immich_nodes.save_to_immich.folder_paths", fake_folder_paths):
+            result = node._save_comfy_preview(b"png-bytes", "preview.png")
+
+        assert result == {"filename": "preview.png", "subfolder": "", "type": "output"}
+        assert (tmp_path / "preview.png").read_bytes() == b"png-bytes"
+
     @patch("immich_nodes.save_to_immich.urlopen")
     def test_upload_success(self, mock_urlopen):
         """Full upload flow with mocked HTTP."""
@@ -136,7 +190,14 @@ class TestSaveToImmich:
         mock_tensor.numpy.return_value = np.random.rand(32, 32, 3).astype(np.float32)
         mock_images.__getitem__ = lambda s, i: mock_tensor
 
-        with patch.object(node, "_get_config", return_value=("https://immich.test", "test-key")):
+        with (
+            patch.object(node, "_get_config", return_value=("https://immich.test", "test-key")),
+            patch.object(
+                node,
+                "_save_comfy_preview",
+                return_value={"filename": "preview.png", "subfolder": "", "type": "output"},
+            ),
+        ):
             result = node.upload(
                 mock_images,
                 description="test image",
@@ -145,3 +206,14 @@ class TestSaveToImmich:
 
         assert len(result["ui"]["images"]) == 1
         assert result["ui"]["images"][0]["asset_id"] == "asset-123"
+        assert result["ui"]["images"][0]["filename"] == "preview.png"
+        assert result["ui"]["images"][0]["subfolder"] == ""
+        assert result["ui"]["images"][0]["type"] == "output"
+
+        upload_request = mock_urlopen.call_args_list[0].args[0]
+        assert upload_request.full_url == "https://immich.test/api/assets"
+        assert b"fileCreatedAt" in upload_request.data
+        assert b"fileModifiedAt" in upload_request.data
+        assert b"assetData" in upload_request.data
+        assert b"deviceAssetId" not in upload_request.data
+        assert b"deviceId" not in upload_request.data

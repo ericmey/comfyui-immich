@@ -12,6 +12,11 @@ import numpy as np
 from PIL import Image
 from PIL.PngImagePlugin import PngInfo
 
+try:
+    import folder_paths
+except ImportError:
+    folder_paths = None
+
 
 def _load_env(env_path):
     """Parse a .env file into a dict. Skips comments and blank lines."""
@@ -28,6 +33,14 @@ def _load_env(env_path):
             key, _, value = line.partition("=")
             env[key.strip()] = value.strip().strip("\"'")
     return env
+
+
+def _normalize_immich_url(url):
+    """Normalize Immich base URL values from .env or shell environment."""
+    url = (url or "").strip().rstrip("/")
+    if url.endswith("/api"):
+        url = url[: -len("/api")]
+    return url
 
 
 def _multipart_encode(fields, files):
@@ -64,6 +77,22 @@ def _multipart_encode(fields, files):
     return body, content_type
 
 
+def _format_request_error(error):
+    """Return a useful HTTP error string without logging request headers."""
+    if isinstance(error, HTTPError):
+        try:
+            body = error.read().decode("utf-8", errors="replace").strip()
+        except Exception:
+            body = ""
+
+        status = f"HTTP {error.code}"
+        if error.reason:
+            status = f"{status} {error.reason}"
+        return f"{status}: {body}" if body else status
+
+    return str(error)
+
+
 class SaveToImmich:
     """ComfyUI output node that uploads images to Immich with embedded metadata."""
 
@@ -96,8 +125,8 @@ class SaveToImmich:
         env_path = os.path.join(package_dir, ".env")
         env = _load_env(env_path)
 
-        immich_url = env.get("IMMICH_URL", "")
-        api_key = env.get("IMMICH_API_KEY", "")
+        immich_url = os.environ.get("IMMICH_URL") or env.get("IMMICH_URL", "")
+        api_key = os.environ.get("IMMICH_API_KEY") or env.get("IMMICH_API_KEY", "")
 
         if not immich_url:
             raise ValueError(
@@ -110,13 +139,16 @@ class SaveToImmich:
                 "with IMMICH_API_KEY=your-api-key-here"
             )
 
-        return immich_url.rstrip("/"), api_key
+        return _normalize_immich_url(immich_url), api_key.strip()
 
     def _api_request(self, url, method, headers, body=None):
         """Make an HTTP request and return parsed JSON response."""
         req = Request(url, data=body, headers=headers, method=method)
         with urlopen(req, timeout=30) as resp:
-            return json.loads(resp.read().decode())
+            data = resp.read()
+            if not data:
+                return {}
+            return json.loads(data.decode())
 
     def _build_png_bytes(self, img_tensor, prompt=None, extra_pnginfo=None):
         """Convert image tensor to PNG bytes with embedded metadata.
@@ -147,8 +179,6 @@ class SaveToImmich:
         now = datetime.now(timezone.utc).isoformat()
 
         fields = [
-            ("deviceAssetId", str(uuid.uuid4())),
-            ("deviceId", "comfyui-immich"),
             ("fileCreatedAt", now),
             ("fileModifiedAt", now),
         ]
@@ -165,6 +195,18 @@ class SaveToImmich:
 
         result = self._api_request(f"{immich_url}/api/assets", "POST", headers, body)
         return result.get("id")
+
+    def _save_comfy_preview(self, png_bytes, filename):
+        """Save a ComfyUI-viewable local preview and return frontend image metadata."""
+        if folder_paths is None:
+            return None
+
+        output_dir = folder_paths.get_output_directory()
+        os.makedirs(output_dir, exist_ok=True)
+        with open(os.path.join(output_dir, filename), "wb") as f:
+            f.write(png_bytes)
+
+        return {"filename": filename, "subfolder": "", "type": "output"}
 
     def _set_description(self, immich_url, api_key, asset_id, description):
         """Set the description on an Immich asset."""
@@ -283,24 +325,38 @@ class SaveToImmich:
 
                 print(f"[SaveToImmich] Uploaded {i + 1}/{batch_size}: {filename} -> {asset_id}")
 
+                image_result = self._save_comfy_preview(png_bytes, filename) or {
+                    "filename": filename
+                }
+                image_result["asset_id"] = asset_id
+
                 # Set Immich description (visible in the UI)
                 if description:
                     try:
                         self._set_description(immich_url, api_key, asset_id, description)
                     except (HTTPError, URLError) as e:
-                        print(f"[SaveToImmich] WARNING: Failed to set description: {e}")
+                        print(
+                            "[SaveToImmich] WARNING: Failed to set description: "
+                            f"{_format_request_error(e)}"
+                        )
 
                 # Add to album
                 if album_id:
                     try:
                         self._add_to_album(immich_url, api_key, album_id, asset_id)
                     except (HTTPError, URLError) as e:
-                        print(f"[SaveToImmich] WARNING: Failed to add to album: {e}")
+                        print(
+                            "[SaveToImmich] WARNING: Failed to add to album: "
+                            f"{_format_request_error(e)}"
+                        )
 
-                results.append({"asset_id": asset_id, "filename": filename})
+                results.append(image_result)
 
             except (HTTPError, URLError) as e:
-                print(f"[SaveToImmich] ERROR: Failed to upload image {i + 1}/{batch_size}: {e}")
+                print(
+                    f"[SaveToImmich] ERROR: Failed to upload image {i + 1}/{batch_size}: "
+                    f"{_format_request_error(e)}"
+                )
             except Exception as e:
                 print(f"[SaveToImmich] ERROR: Unexpected error on image {i + 1}/{batch_size}: {e}")
 

@@ -1,6 +1,6 @@
 [project]
 name = "comfyui-immich"
-version = "0.2.4"
+version = "0.2.5"
 description = "ComfyUI custom nodes for Immich integration — upload, metadata, album management"
 readme = "README.md"
 license = {text = "MIT"}
@@ -12,6 +12,8 @@ keywords = ["comfyui", "immich", "image-upload", "custom-node"]
 
 [project.optional-dependencies]
 dev = [
+    "numpy>=1.26",
+    "pillow>=10.0",
     "pytest>=7.0",
     "ruff>=0.4",
     "mypy>=1.8",

@@ -6,7 +6,9 @@ Custom nodes for [ComfyUI](https://github.com/comfyanonymous/ComfyUI) that integ
 
 - **Save to Immich** — Upload generated images directly to your Immich server
 - Full workflow and prompt metadata embedded in PNG (drag-drop back into ComfyUI to reproduce)
+- ComfyUI-viewable local preview output for each successful upload
 - Optional album assignment and description tagging on upload
+- Immich v3-compatible upload payloads
 - Per-image error handling — one failure doesn't crash the batch
 - Zero extra dependencies — uses only packages already in ComfyUI (PIL, numpy, torch)
 
@@ -76,6 +78,7 @@ An output node that uploads images to Immich at the end of a workflow.
 Each uploaded image includes:
 
 - **PNG metadata**: Full ComfyUI workflow + prompt data (same format as the built-in SaveImage node). You can drag the image back into ComfyUI to load the exact workflow that created it.
+- **ComfyUI preview**: A local output copy so the node result displays correctly in the ComfyUI UI.
 - **Immich description**: Whatever you put in the `description` field, visible in the Immich web UI.
 - **Album placement**: If `album_id` is provided, the image is added to that album immediately after upload.
 
