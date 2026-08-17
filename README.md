@@ -6,8 +6,9 @@ Custom nodes for [ComfyUI](https://github.com/comfyanonymous/ComfyUI) that integ
 
 - **Save to Immich** — Upload generated images directly to your Immich server
 - Full workflow and prompt metadata embedded in PNG (drag-drop back into ComfyUI to reproduce)
-- ComfyUI-viewable local preview output for each successful upload
-- Optional album assignment and description tagging on upload
+- ComfyUI-viewable local preview written before upload, so a down Immich
+  does not eat the render (Atelier and the UI both read this file)
+- Optional character label, album assignment, and description tagging
 - Immich v3-compatible upload payloads
 - Per-image error handling — one failure doesn't crash the batch
 - Zero extra dependencies — uses only packages already in ComfyUI (PIL, numpy, torch)
@@ -62,7 +63,8 @@ An output node that uploads images to Immich at the end of a workflow.
 | Input | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | images | IMAGE | Yes | — | Image tensor from the pipeline |
-| description | STRING | No | `""` | Description visible in Immich UI |
+| character | STRING | No | `""` | Who this render is of. Prefixed onto the Immich description as `Character: …`. Atelier fills this from the record; type it by hand in the UI. Not an Immich people/face tag. |
+| description | STRING | No | `""` | Description visible in Immich UI. Empty means auto-build from the graph (character, checkpoint/UNET, sampler, seed, prompt). |
 | album_id | STRING | No | `""` | Immich album UUID to add the image to |
 | filename_prefix | STRING | No | `"ComfyUI"` | Prefix for the uploaded filename |
 
@@ -78,8 +80,8 @@ An output node that uploads images to Immich at the end of a workflow.
 Each uploaded image includes:
 
 - **PNG metadata**: Full ComfyUI workflow + prompt data (same format as the built-in SaveImage node). You can drag the image back into ComfyUI to load the exact workflow that created it.
-- **ComfyUI preview**: A local output copy so the node result displays correctly in the ComfyUI UI.
-- **Immich description**: Whatever you put in the `description` field, visible in the Immich web UI.
+- **ComfyUI preview**: A local output copy written *before* the upload. The UI and Atelier download this file from history even if Immich is unreachable.
+- **Immich description**: The `description` field if you filled it, otherwise an auto-built caption from the graph. A filled `character` is always prefixed.
 - **Album placement**: If `album_id` is provided, the image is added to that album immediately after upload.
 
 #### Usage
@@ -90,7 +92,14 @@ Wire it as a terminal node — connect the image output from your VAE Decode, De
 KSampler → VAE Decode → Save to Immich
 ```
 
-It can be used alongside or instead of the built-in SaveImage node.
+Use it **instead of** SaveImage when you want one copy. Running both publishes
+the same picture twice (re-encoded) because each output node writes its own
+history entry — Atelier and a hand-run graph both see that as two files.
+
+Hand-run graphs and Atelier share this node. Atelier only fills `character`
+(and optional `description` / `album_id`). A graph opened in the ComfyUI UI
+with those fields left blank still archives: the node reads the prompt,
+checkpoint or UNET, sampler, and seed itself.
 
 ## Updating
 

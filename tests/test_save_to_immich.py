@@ -3,6 +3,7 @@
 import io
 import json
 from unittest.mock import MagicMock, patch
+from urllib.error import URLError
 
 import numpy as np
 import pytest
@@ -74,6 +75,7 @@ class TestSaveToImmich:
     def test_input_types_structure(self):
         inputs = SaveToImmich.INPUT_TYPES()
         assert "images" in inputs["required"]
+        assert "character" in inputs["optional"]
         assert "description" in inputs["optional"]
         assert "album_id" in inputs["optional"]
         assert "filename_prefix" in inputs["optional"]
@@ -217,3 +219,96 @@ class TestSaveToImmich:
         assert b"assetData" in upload_request.data
         assert b"deviceAssetId" not in upload_request.data
         assert b"deviceId" not in upload_request.data
+
+    def test_auto_description_reads_atelier_graph(self):
+        node = SaveToImmich()
+        prompt = {
+            "101": {
+                "class_type": "UNETLoader",
+                "inputs": {"unet_name": "moodyKrea2Mix_v60.safetensors"},
+                "_meta": {"title": "Diffusion model"},
+            },
+            "201": {
+                "class_type": "CLIPTextEncode",
+                "inputs": {"text": "### CHARACTER\nAoi\n\n### SCENE\nreading"},
+                "_meta": {"title": "Positive prompt"},
+            },
+            "302": {
+                "class_type": "KSampler",
+                "inputs": {
+                    "seed": 42,
+                    "sampler_name": "euler_ancestral",
+                    "steps": 9,
+                    "cfg": 1.0,
+                },
+                "_meta": {"title": "Sampler"},
+            },
+        }
+        text = node._build_auto_description(prompt, character="Aoi Katsuragi")
+        assert text.startswith("Character: Aoi Katsuragi")
+        assert "Checkpoint: moodyKrea2Mix_v60.safetensors" in text
+        assert "Sampler: euler_ancestral | Steps: 9 | CFG: 1.0" in text
+        assert "Seed: 42" in text
+        assert "### CHARACTER\nAoi" in text
+
+    def test_auto_description_reads_atelier_at_prompt_title(self):
+        node = SaveToImmich()
+        prompt = {
+            "101": {
+                "class_type": "UNETLoader",
+                "inputs": {"unet_name": "redcraftMinimaxH3REDMIX_30Krea2.safetensors"},
+                "_meta": {"title": "@model"},
+            },
+            "301": {
+                "class_type": "CLIPTextEncode",
+                "inputs": {"text": "a quiet kitchen"},
+                "_meta": {"title": "@prompt"},
+            },
+        }
+        text = node._build_auto_description(prompt)
+        assert "Checkpoint: redcraftMinimaxH3REDMIX_30Krea2.safetensors" in text
+        assert "Positive: a quiet kitchen" in text
+
+    def test_auto_description_reads_checkpoint_loader(self):
+        node = SaveToImmich()
+        prompt = {
+            "1": {
+                "class_type": "CheckpointLoaderSimple",
+                "inputs": {"ckpt_name": "old.safetensors"},
+            },
+            "2": {
+                "class_type": "CLIPTextEncode",
+                "inputs": {"text": "a kitchen"},
+                "_meta": {"title": "@positive"},
+            },
+        }
+        text = node._build_auto_description(prompt)
+        assert "Checkpoint: old.safetensors" in text
+        assert "Positive: a kitchen" in text
+
+    @patch("immich_nodes.save_to_immich.urlopen")
+    def test_preview_is_kept_when_upload_fails(self, mock_urlopen):
+        node = SaveToImmich()
+        mock_urlopen.side_effect = URLError("immich down")
+
+        mock_images = MagicMock()
+        mock_images.shape = [1]
+        mock_tensor = MagicMock()
+        mock_tensor.cpu.return_value = mock_tensor
+        mock_tensor.numpy.return_value = np.random.rand(32, 32, 3).astype(np.float32)
+        mock_images.__getitem__ = lambda s, i: mock_tensor
+
+        with (
+            patch.object(node, "_get_config", return_value=("https://immich.test", "test-key")),
+            patch.object(
+                node,
+                "_save_comfy_preview",
+                return_value={"filename": "kept.png", "subfolder": "", "type": "output"},
+            ) as preview,
+        ):
+            result = node.upload(mock_images, filename_prefix="test")
+
+        preview.assert_called_once()
+        assert len(result["ui"]["images"]) == 1
+        assert result["ui"]["images"][0]["filename"] == "kept.png"
+        assert "asset_id" not in result["ui"]["images"][0]

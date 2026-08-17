@@ -228,8 +228,27 @@ class SaveToImmich:
         }
         self._api_request(f"{immich_url}/api/albums/{album_id}/assets", "PUT", headers, body)
 
+    _POSITIVE_TITLES = {
+        "@prompt",
+        "@positive",
+        "positive",
+        "positive prompt",
+    }
+    _NEGATIVE_TITLES = {
+        "@negative",
+        "negative",
+        "negative prompt",
+        "negative (zeroed)",
+    }
+    _SKIP_PROMPT_TITLES = {"hand positive prompt"}
+
     def _build_auto_description(self, prompt, character=""):
-        """Build a description from the ComfyUI workflow prompt data."""
+        """Build a description from the ComfyUI workflow prompt data.
+
+        Titles match both Atelier's normaliser ("Positive prompt",
+        "Diffusion model") and common hand-built graphs (@positive,
+        CheckpointLoaderSimple).
+        """
         if not prompt:
             return f"Character: {character}" if character else ""
 
@@ -238,7 +257,6 @@ class SaveToImmich:
             lines.append(f"Character: {character}")
         nodes = prompt if isinstance(prompt, dict) else {}
 
-        # Find key nodes by class type
         positive_text = ""
         negative_text = ""
         checkpoint = ""
@@ -248,28 +266,37 @@ class SaveToImmich:
         cfg = ""
 
         for node in nodes.values():
+            if not isinstance(node, dict):
+                continue
             class_type = node.get("class_type", "")
             inputs = node.get("inputs", {})
-            meta_title = node.get("_meta", {}).get("title", "")
+            title = str(node.get("_meta", {}).get("title", "")).strip().lower()
 
             if class_type == "CLIPTextEncode":
                 text = inputs.get("text", "")
-                is_positive = meta_title in ("@prompt", "@positive") or (
-                    not positive_text and meta_title not in ("@negative", "Hand Positive Prompt")
-                )
-                if is_positive and text and meta_title != "Hand Positive Prompt":
+                if not text:
+                    continue
+                if title in self._NEGATIVE_TITLES:
+                    negative_text = negative_text or text
+                elif title in self._POSITIVE_TITLES:
                     positive_text = positive_text or text
-                if meta_title == "@negative":
-                    negative_text = text
+                elif not positive_text and title not in self._SKIP_PROMPT_TITLES:
+                    positive_text = text
 
-            elif class_type == "CheckpointLoaderSimple":
-                checkpoint = inputs.get("ckpt_name", "")
+            elif class_type in ("CheckpointLoaderSimple", "UNETLoader"):
+                checkpoint = (
+                    inputs.get("ckpt_name")
+                    or inputs.get("unet_name")
+                    or checkpoint
+                )
 
-            elif class_type == "KSampler":
-                seed = str(inputs.get("seed", ""))
-                sampler = inputs.get("sampler_name", "")
-                steps = str(inputs.get("steps", ""))
-                cfg = str(inputs.get("cfg", ""))
+            elif class_type == "KSampler" or (
+                isinstance(class_type, str) and "KSampler" in class_type
+            ):
+                seed = str(inputs.get("seed", seed))
+                sampler = inputs.get("sampler_name", sampler) or sampler
+                steps = str(inputs.get("steps", steps))
+                cfg = str(inputs.get("cfg", cfg))
 
         if checkpoint:
             lines.append(f"Checkpoint: {checkpoint}")
@@ -307,15 +334,21 @@ class SaveToImmich:
         print(f"[SaveToImmich] Uploading {batch_size} image(s) to {immich_url}")
 
         for i in range(batch_size):
+            image_result = None
             try:
-                # Convert tensor to PNG with full embedded metadata
                 png_bytes = self._build_png_bytes(
                     images[i], prompt=prompt, extra_pnginfo=extra_pnginfo
                 )
 
-                filename = f"{filename_prefix}_{timestamp}_{i:04d}.png"
+                filename = f"{filename_prefix}_{timestamp}_{i:04d}_{uuid.uuid4().hex[:8]}.png"
 
-                # Upload with metadata already embedded in the PNG
+                # Local preview first. Atelier and the ComfyUI UI both read
+                # this file from history; Immich is the archive, not delivery.
+                image_result = self._save_comfy_preview(png_bytes, filename) or {
+                    "filename": filename
+                }
+                results.append(image_result)
+
                 asset_id = self._upload_asset(immich_url, api_key, png_bytes, filename)
                 if not asset_id:
                     print(
@@ -324,13 +357,8 @@ class SaveToImmich:
                     continue
 
                 print(f"[SaveToImmich] Uploaded {i + 1}/{batch_size}: {filename} -> {asset_id}")
-
-                image_result = self._save_comfy_preview(png_bytes, filename) or {
-                    "filename": filename
-                }
                 image_result["asset_id"] = asset_id
 
-                # Set Immich description (visible in the UI)
                 if description:
                     try:
                         self._set_description(immich_url, api_key, asset_id, description)
@@ -340,7 +368,6 @@ class SaveToImmich:
                             f"{_format_request_error(e)}"
                         )
 
-                # Add to album
                 if album_id:
                     try:
                         self._add_to_album(immich_url, api_key, album_id, asset_id)
@@ -350,8 +377,6 @@ class SaveToImmich:
                             f"{_format_request_error(e)}"
                         )
 
-                results.append(image_result)
-
             except (HTTPError, URLError) as e:
                 print(
                     f"[SaveToImmich] ERROR: Failed to upload image {i + 1}/{batch_size}: "
@@ -359,6 +384,12 @@ class SaveToImmich:
                 )
             except Exception as e:
                 print(f"[SaveToImmich] ERROR: Unexpected error on image {i + 1}/{batch_size}: {e}")
+                if image_result is None:
+                    continue
 
-        print(f"[SaveToImmich] Done. {len(results)}/{batch_size} image(s) uploaded successfully.")
+        uploaded = sum(1 for item in results if item.get("asset_id"))
+        print(
+            f"[SaveToImmich] Done. {len(results)}/{batch_size} preview(s), "
+            f"{uploaded}/{batch_size} uploaded."
+        )
         return {"ui": {"images": results}}
