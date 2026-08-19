@@ -3,6 +3,7 @@
 import io
 import json
 import os
+import time
 import uuid
 from datetime import datetime, timezone
 from urllib.error import HTTPError, URLError
@@ -16,6 +17,14 @@ try:
     import folder_paths
 except ImportError:
     folder_paths = None
+
+# Immich stores a freshly uploaded asset under upload/ and the storage template
+# engine then moves it into library/. The sidecar write queued by a description
+# PUT resolves the asset path as it stood when the job was queued, so setting a
+# description before that move lands the job on a path that no longer exists.
+_UPLOAD_PATH_MARKER = "/upload/"
+_SETTLE_TIMEOUT_SECONDS = 5.0
+_SETTLE_POLL_SECONDS = 0.25
 
 
 def _load_env(env_path):
@@ -208,6 +217,40 @@ class SaveToImmich:
 
         return {"filename": filename, "subfolder": "", "type": "output"}
 
+    def _get_asset(self, immich_url, api_key, asset_id):
+        """Fetch a single asset. Used to observe where Immich has put the file."""
+        headers = {
+            "x-api-key": api_key,
+            "Accept": "application/json",
+        }
+        return self._api_request(f"{immich_url}/api/assets/{asset_id}", "GET", headers)
+
+    def _wait_for_storage_settle(self, immich_url, api_key, asset_id):
+        """Block until Immich has moved the asset out of upload/.
+
+        The description PUT queues a sidecar write, and that job resolves the
+        asset path as it stood when the job was queued. Writing the description
+        while the file is still in upload/ races the storage template move: the
+        job wakes to a path that has already gone and dies on ENOENT. The asset
+        itself is fine; the .xmp sidecar is what gets lost.
+
+        Returns True once the asset has moved, False if it never did within the
+        timeout — which is also what happens when the storage template engine is
+        switched off and the file legitimately stays in upload/ forever.
+        """
+        deadline = time.monotonic() + _SETTLE_TIMEOUT_SECONDS
+        while True:
+            try:
+                asset = self._get_asset(immich_url, api_key, asset_id)
+            except (HTTPError, URLError):
+                return False
+            path = str(asset.get("originalPath") or "")
+            if path and _UPLOAD_PATH_MARKER not in path:
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(_SETTLE_POLL_SECONDS)
+
     def _set_description(self, immich_url, api_key, asset_id, description):
         """Set the description on an Immich asset."""
         body = json.dumps({"description": description}).encode()
@@ -284,11 +327,7 @@ class SaveToImmich:
                     positive_text = text
 
             elif class_type in ("CheckpointLoaderSimple", "UNETLoader"):
-                checkpoint = (
-                    inputs.get("ckpt_name")
-                    or inputs.get("unet_name")
-                    or checkpoint
-                )
+                checkpoint = inputs.get("ckpt_name") or inputs.get("unet_name") or checkpoint
 
             elif class_type == "KSampler" or (
                 isinstance(class_type, str) and "KSampler" in class_type
@@ -329,6 +368,9 @@ class SaveToImmich:
 
         results = []
         batch_size = images.shape[0]
+        # One timeout per batch, not per image: if the first asset never leaves
+        # upload/, the storage template engine is off and waiting is pointless.
+        settle_enabled = True
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
         print(f"[SaveToImmich] Uploading {batch_size} image(s) to {immich_url}")
@@ -361,6 +403,15 @@ class SaveToImmich:
 
                 if description:
                     try:
+                        if settle_enabled and not self._wait_for_storage_settle(
+                            immich_url, api_key, asset_id
+                        ):
+                            settle_enabled = False
+                            print(
+                                "[SaveToImmich] NOTE: asset did not leave upload/ within "
+                                f"{_SETTLE_TIMEOUT_SECONDS:g}s; setting descriptions "
+                                "immediately for the rest of this batch"
+                            )
                         self._set_description(immich_url, api_key, asset_id, description)
                     except (HTTPError, URLError) as e:
                         print(

@@ -182,7 +182,14 @@ class TestSaveToImmich:
         desc_resp.__enter__ = lambda s: s
         desc_resp.__exit__ = MagicMock(return_value=False)
 
-        mock_urlopen.side_effect = [upload_resp, desc_resp]
+        settle_resp = MagicMock()
+        settle_resp.read.return_value = json.dumps(
+            {"id": "asset-123", "originalPath": "/data/library/admin/2026/x.png"}
+        ).encode()
+        settle_resp.__enter__ = lambda s: s
+        settle_resp.__exit__ = MagicMock(return_value=False)
+
+        mock_urlopen.side_effect = [upload_resp, settle_resp, desc_resp]
 
         # Create fake image tensor (batch of 1)
         mock_images = MagicMock()
@@ -312,3 +319,100 @@ class TestSaveToImmich:
         assert len(result["ui"]["images"]) == 1
         assert result["ui"]["images"][0]["filename"] == "kept.png"
         assert "asset_id" not in result["ui"]["images"][0]
+
+
+class TestStorageSettle:
+    """The description PUT must not race Immich's storage template move.
+
+    Immich queues the sidecar write from the description PUT and resolves the
+    asset path as it stood when the job was queued. Setting a description while
+    the file is still in upload/ leaves that job stat-ing a path the storage
+    template has already moved, which fails as ENOENT and loses the .xmp.
+    """
+
+    def _asset_resp(self, path):
+        resp = MagicMock()
+        resp.read.return_value = json.dumps({"id": "asset-123", "originalPath": path}).encode()
+        resp.__enter__ = lambda s: s
+        resp.__exit__ = MagicMock(return_value=False)
+        return resp
+
+    @patch("immich_nodes.save_to_immich.time.sleep")
+    @patch("immich_nodes.save_to_immich.urlopen")
+    def test_waits_until_asset_leaves_upload(self, mock_urlopen, mock_sleep):
+        node = SaveToImmich()
+        mock_urlopen.side_effect = [
+            self._asset_resp("/data/upload/user/ab/cd/asset-123.png"),
+            self._asset_resp("/data/upload/user/ab/cd/asset-123.png"),
+            self._asset_resp("/data/library/admin/2026/2026-08-19/render.png"),
+        ]
+
+        assert node._wait_for_storage_settle("https://immich.test", "key", "asset-123") is True
+        assert mock_urlopen.call_count == 3
+        assert mock_sleep.call_count == 2
+
+    @patch("immich_nodes.save_to_immich._SETTLE_TIMEOUT_SECONDS", 0.05)
+    @patch("immich_nodes.save_to_immich.time.sleep")
+    @patch("immich_nodes.save_to_immich.urlopen")
+    def test_gives_up_when_asset_never_moves(self, mock_urlopen, mock_sleep):
+        """Storage template engine off: the file stays in upload/ legitimately."""
+        node = SaveToImmich()
+        mock_urlopen.side_effect = lambda *a, **k: self._asset_resp(
+            "/data/upload/user/ab/cd/asset-123.png"
+        )
+
+        assert node._wait_for_storage_settle("https://immich.test", "key", "asset-123") is False
+
+    @patch("immich_nodes.save_to_immich.urlopen")
+    def test_lookup_failure_does_not_block_description(self, mock_urlopen):
+        node = SaveToImmich()
+        mock_urlopen.side_effect = URLError("boom")
+
+        assert node._wait_for_storage_settle("https://immich.test", "key", "asset-123") is False
+
+    @patch("immich_nodes.save_to_immich._SETTLE_TIMEOUT_SECONDS", 0.05)
+    @patch("immich_nodes.save_to_immich.time.sleep")
+    @patch("immich_nodes.save_to_immich.urlopen")
+    def test_description_is_still_set_when_settle_times_out(self, mock_urlopen, mock_sleep):
+        """A stuck move must degrade to the old behaviour, not drop the caption."""
+        node = SaveToImmich()
+
+        upload_resp = MagicMock()
+        upload_resp.read.return_value = json.dumps({"id": "asset-123"}).encode()
+        upload_resp.__enter__ = lambda s: s
+        upload_resp.__exit__ = MagicMock(return_value=False)
+
+        desc_resp = MagicMock()
+        desc_resp.read.return_value = json.dumps({}).encode()
+        desc_resp.__enter__ = lambda s: s
+        desc_resp.__exit__ = MagicMock(return_value=False)
+
+        stuck = self._asset_resp("/data/upload/user/ab/cd/asset-123.png")
+
+        def responses(*args, **kwargs):
+            req = args[0]
+            if req.full_url.endswith("/api/assets") and req.method == "POST":
+                return upload_resp
+            if req.method == "PUT":
+                return desc_resp
+            return stuck
+
+        mock_urlopen.side_effect = responses
+
+        mock_images = MagicMock()
+        mock_images.shape = [1]
+        mock_tensor = MagicMock()
+        mock_tensor.cpu.return_value = mock_tensor
+        mock_tensor.numpy.return_value = np.random.rand(32, 32, 3).astype(np.float32)
+        mock_images.__getitem__ = lambda s, i: mock_tensor
+
+        with (
+            patch.object(node, "_get_config", return_value=("https://immich.test", "test-key")),
+            patch.object(node, "_save_comfy_preview", return_value={"filename": "p.png"}),
+        ):
+            result = node.upload(mock_images, description="caption", filename_prefix="test")
+
+        assert result["ui"]["images"][0]["asset_id"] == "asset-123"
+        put_calls = [c for c in mock_urlopen.call_args_list if c.args[0].method == "PUT"]
+        assert len(put_calls) == 1
+        assert b"caption" in put_calls[0].args[0].data
