@@ -6,6 +6,7 @@ import os
 import time
 import uuid
 from datetime import datetime, timezone
+from typing import ClassVar
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -279,19 +280,19 @@ class SaveToImmich:
         }
         self._api_request(f"{immich_url}/api/albums/{album_id}/assets", "PUT", headers, body)
 
-    _POSITIVE_TITLES = {
+    _POSITIVE_TITLES: ClassVar[set[str]] = {
         "@prompt",
         "@positive",
         "positive",
         "positive prompt",
     }
-    _NEGATIVE_TITLES = {
+    _NEGATIVE_TITLES: ClassVar[set[str]] = {
         "@negative",
         "negative",
         "negative prompt",
         "negative (zeroed)",
     }
-    _SKIP_PROMPT_TITLES = {"hand positive prompt"}
+    _SKIP_PROMPT_TITLES: ClassVar[set[str]] = {"hand positive prompt"}
 
     def _build_auto_description(self, prompt, character=""):
         """Build a description from the ComfyUI workflow prompt data.
