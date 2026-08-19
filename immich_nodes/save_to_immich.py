@@ -20,8 +20,8 @@ except ImportError:
 
 # Immich stores a freshly uploaded asset under upload/ and the storage template
 # engine then moves it into library/. The sidecar write queued by a description
-# PUT resolves the asset path as it stood when the job was queued, so setting a
-# description before that move lands the job on a path that no longer exists.
+# PUT reads the asset path when its handler starts, so setting a description
+# before that move leaves the handler racing it to a path that is about to go.
 _UPLOAD_PATH_MARKER = "/upload/"
 _SETTLE_TIMEOUT_SECONDS = 5.0
 _SETTLE_POLL_SECONDS = 0.25
@@ -228,11 +228,15 @@ class SaveToImmich:
     def _wait_for_storage_settle(self, immich_url, api_key, asset_id):
         """Block until Immich has moved the asset out of upload/.
 
-        The description PUT queues a sidecar write, and that job resolves the
-        asset path as it stood when the job was queued. Writing the description
+        The description PUT queues a sidecar write, and that job reads the
+        asset's originalPath when the handler starts. Writing the description
         while the file is still in upload/ races the storage template move: the
-        job wakes to a path that has already gone and dies on ENOENT. The asset
-        itself is fine; the .xmp sidecar is what gets lost.
+        handler reads the pre-move path, the move lands underneath it, and the
+        stat fails with ENOENT. The asset itself is fine; the .xmp sidecar is
+        what gets lost.
+
+        StorageCore.moveFile renames the file before saving the new path, so an
+        originalPath outside upload/ proves the physical move already finished.
 
         Returns True once the asset has moved, False if it never did within the
         timeout — which is also what happens when the storage template engine is
@@ -243,10 +247,14 @@ class SaveToImmich:
             try:
                 asset = self._get_asset(immich_url, api_key, asset_id)
             except (HTTPError, URLError):
-                return False
-            path = str(asset.get("originalPath") or "")
-            if path and _UPLOAD_PATH_MARKER not in path:
-                return True
+                # A transient lookup failure says nothing about where the file
+                # is. Treating it as settled would fail open into the very race
+                # this wait exists to close, so keep trying until the deadline.
+                asset = None
+            if asset is not None:
+                path = str(asset.get("originalPath") or "")
+                if path and _UPLOAD_PATH_MARKER not in path:
+                    return True
             if time.monotonic() >= deadline:
                 return False
             time.sleep(_SETTLE_POLL_SECONDS)

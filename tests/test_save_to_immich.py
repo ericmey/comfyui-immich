@@ -363,12 +363,33 @@ class TestStorageSettle:
 
         assert node._wait_for_storage_settle("https://immich.test", "key", "asset-123") is False
 
+    @patch("immich_nodes.save_to_immich.time.sleep")
     @patch("immich_nodes.save_to_immich.urlopen")
-    def test_lookup_failure_does_not_block_description(self, mock_urlopen):
+    def test_transient_lookup_error_keeps_polling(self, mock_urlopen, mock_sleep):
+        """A failed GET says nothing about where the file is.
+
+        Treating it as settled would fail open into the exact race this wait
+        exists to close, so a transient error must not end the wait early.
+        """
+        node = SaveToImmich()
+        mock_urlopen.side_effect = [
+            URLError("boom"),
+            self._asset_resp("/data/upload/user/ab/cd/asset-123.png"),
+            self._asset_resp("/data/library/admin/2026/2026-08-19/render.png"),
+        ]
+
+        assert node._wait_for_storage_settle("https://immich.test", "key", "asset-123") is True
+        assert mock_urlopen.call_count == 3
+
+    @patch("immich_nodes.save_to_immich._SETTLE_TIMEOUT_SECONDS", 0.05)
+    @patch("immich_nodes.save_to_immich.time.sleep")
+    @patch("immich_nodes.save_to_immich.urlopen")
+    def test_persistent_lookup_error_gives_up_at_deadline(self, mock_urlopen, mock_sleep):
         node = SaveToImmich()
         mock_urlopen.side_effect = URLError("boom")
 
         assert node._wait_for_storage_settle("https://immich.test", "key", "asset-123") is False
+        assert mock_urlopen.call_count > 1
 
     @patch("immich_nodes.save_to_immich._SETTLE_TIMEOUT_SECONDS", 0.05)
     @patch("immich_nodes.save_to_immich.time.sleep")
