@@ -90,8 +90,11 @@ jobs:
           git tag "v${{ steps.version.outputs.new }}"
           git push origin main "v${{ steps.version.outputs.new }}"
 
+      # Third-party action, and this job holds contents: write. Pinned to a
+      # commit so a compromised or retagged v3 cannot reach that token. Bump
+      # deliberately: the trailing comment is the human-readable version.
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64  # v3.0.3
         with:
           tag_name: "v${{ steps.version.outputs.new }}"
           name: "v${{ steps.version.outputs.new }}"
