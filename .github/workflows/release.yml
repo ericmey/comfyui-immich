@@ -6,23 +6,37 @@ on:
       - main
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
+  # Gate the release on the full suite. Without this the release job raced CI
+  # on the same commit and would happily tag a red build.
+  ci:
+    uses: ./.github/workflows/ci.yml
+
   release:
+    needs: ci
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    # This reads the HEAD commit of the push, which for a PR merge is the merge
+    # or squash subject, not the branch commits. A default merge commit reads
+    # "Merge pull request #N from ..." and matches no conventional prefix, so it
+    # is skipped deliberately: squash with an explicit subject to release.
     if: >-
       !startsWith(github.event.head_commit.message, 'chore:') &&
+      !startsWith(github.event.head_commit.message, 'chore(release):') &&
       !startsWith(github.event.head_commit.message, 'ci:') &&
       !startsWith(github.event.head_commit.message, 'docs:') &&
       !startsWith(github.event.head_commit.message, 'test:') &&
-      !startsWith(github.event.head_commit.message, 'chore(release):')
+      !startsWith(github.event.head_commit.message, 'Merge pull request') &&
+      !startsWith(github.event.head_commit.message, 'Merge branch')
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
 
@@ -64,7 +78,8 @@ jobs:
 
       - name: Update pyproject.toml
         run: |
-          sed -i "s/version = \"${{ steps.version.outputs.current }}\"/version = \"${{ steps.version.outputs.new }}\"/" pyproject.toml
+          sed -i "s/^version = \"${{ steps.version.outputs.current }}\"/version = \"${{ steps.version.outputs.new }}\"/" pyproject.toml
+          grep -q "^version = \"${{ steps.version.outputs.new }}\"" pyproject.toml
 
       - name: Commit and tag
         run: |
@@ -73,10 +88,10 @@ jobs:
           git add pyproject.toml
           git commit -m "chore(release): v${{ steps.version.outputs.new }}"
           git tag "v${{ steps.version.outputs.new }}"
-          git push origin main --tags
+          git push origin main "v${{ steps.version.outputs.new }}"
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: "v${{ steps.version.outputs.new }}"
           name: "v${{ steps.version.outputs.new }}"
