@@ -2,12 +2,14 @@
 
 import io
 import json
+import sys
 from unittest.mock import MagicMock, patch
 from urllib.error import URLError
 
 import numpy as np
 import pytest
 from PIL import Image
+from PIL.PngImagePlugin import PngInfo
 
 from immich_nodes.save_to_immich import (
     SaveToImmich,
@@ -437,3 +439,291 @@ class TestStorageSettle:
         put_calls = [c for c in mock_urlopen.call_args_list if c.args[0].method == "PUT"]
         assert len(put_calls) == 1
         assert b"caption" in put_calls[0].args[0].data
+
+
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "../escape.png",
+        "/tmp/escape.png",
+        "..\\escape.png",
+        "C:\\escape.png",
+        'bad"name.png',
+        "bad\nname.png",
+    ],
+)
+def test_preview_rejects_escaping_paths(tmp_path, filename):
+    paths = MagicMock()
+    paths.get_output_directory.return_value = str(tmp_path)
+    with (
+        patch("immich_nodes.save_to_immich.folder_paths", paths),
+        pytest.raises(ValueError, match="output directory"),
+    ):
+        SaveToImmich()._save_comfy_preview(b"png", filename)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_preview_reports_safe_subfolder_and_refuses_symlink_escape(tmp_path):
+    paths = MagicMock()
+    paths.get_output_directory.return_value = str(tmp_path / "output")
+    (tmp_path / "output").mkdir()
+    (tmp_path / "output/escape").symlink_to(tmp_path, target_is_directory=True)
+    with patch("immich_nodes.save_to_immich.folder_paths", paths):
+        node = SaveToImmich()
+        info = node._save_comfy_preview(b"png", "album/safe.png")
+        assert info["filename"] == "safe.png" and info["subfolder"] == "album"
+        with pytest.raises(ValueError, match="escapes"):
+            node._save_comfy_preview(b"png", "escape/outside.png")
+    assert not (tmp_path / "outside.png").exists()
+
+
+def test_archive_failure_reports_stage_and_keeps_preview():
+    node = SaveToImmich()
+    images = MagicMock()
+    images.shape = [1]
+    with (
+        patch.object(node, "_get_config", side_effect=ValueError("missing configuration")),
+        patch.object(node, "_build_png_bytes", return_value=b"png"),
+        patch.object(node, "_save_comfy_preview", return_value={"filename": "kept.png"}),
+    ):
+        result = node.upload(images)
+    assert result["ui"]["images"][0]["filename"] == "kept.png"
+    report = result["ui"]["archive"][0]
+    assert report["upload"] == "failed"
+    assert report["errors"][0]["stage"] == "upload"
+
+
+def test_metadata_failure_does_not_hide_upload_or_skip_album():
+    node = SaveToImmich()
+    with (
+        patch.object(node, "_get_config", return_value=("http://example.invalid", "key")),
+        patch.object(node, "_upload_asset", return_value="asset-id"),
+        patch.object(node, "_wait_for_storage_settle", return_value=True),
+        patch.object(node, "_set_description", side_effect=TimeoutError("timeout")),
+        patch.object(node, "_add_to_album") as album,
+    ):
+        report = node.archive_png(b"png", "image.png", description="caption", album_id="album")
+    assert report["upload"] == "ok"
+    assert report["asset_id"] == "asset-id"
+    assert report["description"] == "failed"
+    assert report["album"] == "ok"
+    album.assert_called_once()
+
+
+def test_retry_archive_preserves_png_bytes_and_can_resume_metadata(tmp_path):
+    from immich_nodes.retry_archive import retry
+
+    path = tmp_path / "original.png"
+    metadata = PngInfo()
+    metadata.add_text(
+        "prompt",
+        json.dumps(
+            {
+                "901": {
+                    "class_type": "SaveToImmich",
+                    "inputs": {"description": "exact caption", "album_id": "album-id"},
+                }
+            }
+        ),
+    )
+    Image.new("RGB", (1, 1)).save(path, pnginfo=metadata)
+    original = path.read_bytes()
+    with patch.object(SaveToImmich, "archive_png", return_value={"errors": []}) as archive:
+        assert retry(path, asset_id="existing") == {"errors": []}
+    archive.assert_called_once_with(
+        original,
+        "original.png",
+        description="exact caption",
+        album_id="album-id",
+        asset_id="existing",
+    )
+    assert path.read_bytes() == original
+
+
+def test_existing_asset_id_never_reuploads_png():
+    node = SaveToImmich()
+    with (
+        patch.object(node, "_get_config", return_value=("http://example.invalid", "key")),
+        patch.object(node, "_upload_asset") as upload,
+    ):
+        report = node.archive_png(b"png", "image.png", asset_id="existing")
+    upload.assert_not_called()
+    assert report["upload"] == "reused" and report["asset_id"] == "existing"
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        [],
+        [{"id": "asset", "success": False, "error": "not_found"}],
+        [{"id": "other", "success": True}],
+    ],
+)
+def test_album_item_failure_is_not_http_success(result):
+    node = SaveToImmich()
+    with (
+        patch.object(node, "_api_request", return_value=result),
+        pytest.raises(ValueError, match="album membership"),
+    ):
+        node._add_to_album("https://immich.test", "key", "album", "asset")
+
+
+@pytest.mark.parametrize("result", [{}, None, ""])
+def test_album_add_without_per_asset_body_is_unconfirmed_not_failed(result):
+    """A 204 or a body-stripping proxy carries no failure to report."""
+    node = SaveToImmich()
+    with patch.object(node, "_api_request", return_value=result):
+        assert node._add_to_album("https://immich.test", "key", "album", "asset") is False
+    with (
+        patch.object(node, "_get_config", return_value=("http://example.invalid", "key")),
+        patch.object(node, "_upload_asset", return_value="asset-id"),
+        patch.object(node, "_api_request", return_value=result),
+    ):
+        report = node.archive_png(b"png", "image.png", album_id="album")
+    assert report["album"] == "unconfirmed"
+    assert report["errors"] == []
+
+
+def test_album_add_returns_confirmation():
+    node = SaveToImmich()
+    with patch.object(node, "_api_request", return_value=[{"id": "asset", "success": True}]):
+        assert node._add_to_album("https://immich.test", "key", "album", "asset") is True
+
+
+@pytest.mark.parametrize(
+    "item",
+    [{"id": "asset", "success": True}, {"id": "asset", "success": False, "error": "duplicate"}],
+)
+def test_album_membership_accepts_insert_or_existing_member(item):
+    node = SaveToImmich()
+    with patch.object(node, "_api_request", return_value=[item]):
+        node._add_to_album("https://immich.test", "key", "album", "asset")
+
+
+def test_one_bad_image_keeps_the_rest_of_the_batch_and_its_receipts():
+    """An encode failure mid-batch must not strand asset IDs already in Immich."""
+    node = SaveToImmich()
+    images = MagicMock()
+    images.shape = [3]
+    encoded = {"n": 0}
+
+    def encode(tensor, prompt=None, extra_pnginfo=None):
+        encoded["n"] += 1
+        if encoded["n"] == 2:
+            raise OSError("no space left on device")
+        return b"png"
+
+    with (
+        patch.object(node, "_get_config", return_value=("http://example.invalid", "key")),
+        patch.object(node, "_build_png_bytes", side_effect=encode),
+        patch.object(node, "_save_comfy_preview", side_effect=lambda b, f: {"filename": f}),
+        patch.object(node, "_upload_asset", side_effect=["asset-1", "asset-3"]),
+    ):
+        result = node.upload(images)
+
+    reports = result["ui"]["archive"]
+    assert [r["upload"] for r in reports] == ["ok", "failed", "ok"]
+    assert [r.get("asset_id") for r in reports] == ["asset-1", None, "asset-3"]
+    assert reports[1]["errors"][0]["stage"] == "encode"
+    assert len(result["ui"]["images"]) == 2
+
+
+def test_rejected_filename_prefix_still_archives_to_immich():
+    """Preview delivery and archiving fail independently, in both directions."""
+    node = SaveToImmich()
+    images = MagicMock()
+    images.shape = [1]
+    with (
+        patch.object(node, "_get_config", return_value=("http://example.invalid", "key")),
+        patch.object(node, "_build_png_bytes", return_value=b"png"),
+        patch.object(
+            node,
+            "_save_comfy_preview",
+            side_effect=ValueError("filename_prefix escapes the ComfyUI output directory"),
+        ),
+        patch.object(node, "_upload_asset", return_value="asset-id"),
+    ):
+        result = node.upload(images, filename_prefix="../escape")
+
+    report = result["ui"]["archive"][0]
+    assert result["ui"]["images"] == []
+    assert report["upload"] == "ok" and report["asset_id"] == "asset-id"
+    assert report["errors"][0]["stage"] == "preview"
+
+
+def test_node_bugs_are_not_disguised_as_stage_failures():
+    """A TypeError in our own code must crash, not surface as a tidy receipt."""
+    node = SaveToImmich()
+    with (
+        patch.object(node, "_get_config", return_value=("http://example.invalid", "key")),
+        patch.object(node, "_upload_asset", side_effect=TypeError("bug in this node")),
+        pytest.raises(TypeError),
+    ):
+        node.archive_png(b"png", "image.png")
+
+
+@pytest.mark.parametrize(
+    ("chunk", "message"),
+    [
+        (None, "nothing to recover"),
+        ("not json", "not valid JSON"),
+        (json.dumps([{"class_type": "SaveToImmich"}]), "mapping of nodes"),
+    ],
+)
+def test_retry_refuses_a_png_without_a_usable_graph(tmp_path, chunk, message):
+    from immich_nodes.retry_archive import retry
+
+    path = tmp_path / "original.png"
+    metadata = PngInfo()
+    if chunk is not None:
+        metadata.add_text("prompt", chunk)
+    Image.new("RGB", (1, 1)).save(path, pnginfo=metadata)
+
+    with (
+        patch.object(SaveToImmich, "archive_png") as archive,
+        pytest.raises(ValueError, match=message),
+    ):
+        retry(path)
+    archive.assert_not_called()
+
+
+def test_retry_with_asset_id_refuses_when_there_is_nothing_left_to_do(tmp_path):
+    from immich_nodes.retry_archive import retry
+
+    path = tmp_path / "original.png"
+    metadata = PngInfo()
+    metadata.add_text("prompt", json.dumps({"1": {"class_type": "PreviewImage", "inputs": {}}}))
+    Image.new("RGB", (1, 1)).save(path, pnginfo=metadata)
+
+    with pytest.raises(ValueError, match="nothing to retry"):
+        retry(path, asset_id="existing")
+
+
+def test_retry_cli_reports_input_errors_without_a_traceback(tmp_path, capsys):
+    from immich_nodes import retry_archive
+
+    path = tmp_path / "plain.png"
+    Image.new("RGB", (1, 1)).save(path)
+    with patch.object(sys, "argv", ["retry_archive", str(path)]):
+        assert retry_archive.main() == 1
+    assert "nothing to recover" in capsys.readouterr().err
+
+
+def test_an_unexpected_bug_still_leaves_receipts_for_the_rest_of_the_batch():
+    """Containment is unconditional: even a TypeError becomes a receipt."""
+    node = SaveToImmich()
+    images = MagicMock()
+    images.shape = [2]
+    with (
+        patch.object(node, "_get_config", return_value=("http://example.invalid", "key")),
+        patch.object(node, "_build_png_bytes", return_value=b"png"),
+        patch.object(node, "_save_comfy_preview", side_effect=lambda b, f: {"filename": f}),
+        patch.object(node, "_upload_asset", side_effect=[TypeError("bug in this node"), "asset-2"]),
+    ):
+        result = node.upload(images)
+
+    reports = result["ui"]["archive"]
+    assert [r["upload"] for r in reports] == ["failed", "ok"]
+    assert reports[0]["errors"][0]["stage"] == "unexpected"
+    assert "TypeError" in reports[0]["errors"][0]["message"]
+    assert reports[1]["asset_id"] == "asset-2"
