@@ -1,0 +1,8 @@
+# ComfyUI Manager installs dependencies from this file; it does not read
+# pyproject.toml. Keep these in sync with [project] dependencies there --
+# tests/test_packaging.py fails if they drift apart.
+#
+# Lower bounds only, deliberately: ComfyUI already ships both, and pinning
+# here would let a node install disturb the host environment's versions.
+numpy>=1.26
+pillow>=10.0
