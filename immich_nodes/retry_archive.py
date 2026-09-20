@@ -87,6 +87,12 @@ def main():
             "nothing was written to the asset",
             file=sys.stderr,
         )
+    if report["album"] == "unconfirmed":
+        print(
+            "retry_archive: Immich accepted the album add without a per-asset "
+            "confirmation; check whether a proxy is stripping response bodies",
+            file=sys.stderr,
+        )
     return 1 if report["errors"] else 0
 
 

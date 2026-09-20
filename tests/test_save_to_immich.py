@@ -16,6 +16,7 @@ from immich_nodes.save_to_immich import (
     _load_env,
     _multipart_encode,
     _normalize_immich_url,
+    _print_batch_summary,
 )
 
 # --- _load_env ---
@@ -727,3 +728,113 @@ def test_an_unexpected_bug_still_leaves_receipts_for_the_rest_of_the_batch():
     assert reports[0]["errors"][0]["stage"] == "unexpected"
     assert "TypeError" in reports[0]["errors"][0]["message"]
     assert reports[1]["asset_id"] == "asset-2"
+
+
+def test_a_working_archive_is_not_silent(capsys):
+    """Silence is indistinguishable from a node that never ran."""
+    node = SaveToImmich()
+    images = MagicMock()
+    images.shape = [2]
+    with (
+        patch.object(node, "_get_config", return_value=("http://example.invalid", "key")),
+        patch.object(node, "_build_png_bytes", return_value=b"png"),
+        patch.object(node, "_save_comfy_preview", side_effect=lambda b, f: {"filename": f}),
+        patch.object(node, "_upload_asset", side_effect=["asset-1", "asset-2"]),
+    ):
+        node.upload(images)
+    assert "Archived 2/2 image(s)" in capsys.readouterr().out
+
+
+def test_unconfirmed_album_is_explained_on_the_console(capsys):
+    """The state exists to be read; a receipt nobody sees is worthless."""
+    node = SaveToImmich()
+    images = MagicMock()
+    images.shape = [1]
+    with (
+        patch.object(node, "_get_config", return_value=("http://example.invalid", "key")),
+        patch.object(node, "_build_png_bytes", return_value=b"png"),
+        patch.object(node, "_save_comfy_preview", side_effect=lambda b, f: {"filename": f}),
+        patch.object(node, "_upload_asset", return_value="asset-1"),
+        patch.object(node, "_api_request", return_value={}),
+    ):
+        result = node.upload(images, album_id="album")
+
+    out = capsys.readouterr().out
+    assert result["ui"]["archive"][0]["album"] == "unconfirmed"
+    assert "without returning a per-asset confirmation" in out
+    assert "reverse proxy" in out
+    assert "failed" not in out
+
+
+def test_summary_counts_a_reused_asset_as_archived(capsys):
+    node = SaveToImmich()
+    with (
+        patch.object(node, "_get_config", return_value=("http://example.invalid", "key")),
+        patch.object(node, "_upload_asset") as upload,
+    ):
+        report = node.archive_png(b"png", "image.png", asset_id="existing")
+    upload.assert_not_called()
+    _print_batch_summary([report])
+    assert "Archived 1/1 image(s)" in capsys.readouterr().out
+
+
+def test_retry_cli_explains_an_unconfirmed_album(tmp_path, capsys):
+    from immich_nodes import retry_archive
+
+    path = tmp_path / "original.png"
+    metadata = PngInfo()
+    metadata.add_text(
+        "prompt",
+        json.dumps(
+            {"1": {"class_type": "SaveToImmich", "inputs": {"description": "c", "album_id": "a"}}}
+        ),
+    )
+    Image.new("RGB", (1, 1)).save(path, pnginfo=metadata)
+
+    report = {"description": "ok", "album": "unconfirmed", "errors": []}
+    with (
+        patch.object(retry_archive, "retry", return_value=report),
+        patch.object(sys, "argv", ["retry_archive", str(path)]),
+    ):
+        assert retry_archive.main() == 0
+    assert "proxy is stripping response bodies" in capsys.readouterr().err
+
+
+def test_failure_names_the_file_and_points_at_the_recovery_tool(capsys):
+    """The named file is exactly the argument retry_archive takes."""
+    node = SaveToImmich()
+    images = MagicMock()
+    images.shape = [2]
+    with (
+        patch.object(node, "_get_config", return_value=("http://example.invalid", "key")),
+        patch.object(node, "_build_png_bytes", return_value=b"png"),
+        patch.object(
+            node, "_save_comfy_preview", side_effect=lambda b, f: {"filename": f, "subfolder": ""}
+        ),
+        patch.object(node, "_upload_asset", side_effect=[URLError("refused"), "asset-2"]),
+    ):
+        result = node.upload(images, filename_prefix="shot")
+
+    out = capsys.readouterr().out
+    failed = result["ui"]["archive"][0]["filename"]
+    assert f"{failed}: upload failed" in out
+    assert "1 image(s) did not reach Immich" in out
+    assert "retry_archive" in out
+
+
+def test_no_retry_hint_when_there_is_no_local_png_to_retry_from(capsys):
+    """Preview and upload both failed: nothing on disk, so the hint would lie."""
+    node = SaveToImmich()
+    images = MagicMock()
+    images.shape = [1]
+    with (
+        patch.object(node, "_get_config", return_value=("http://example.invalid", "key")),
+        patch.object(node, "_build_png_bytes", return_value=b"png"),
+        patch.object(node, "_save_comfy_preview", side_effect=ValueError("bad prefix")),
+        patch.object(node, "_upload_asset", side_effect=URLError("refused")),
+    ):
+        node.upload(images)
+
+    out = capsys.readouterr().out
+    assert "1 image(s) did not reach Immich" in out
+    assert "retry_archive" not in out

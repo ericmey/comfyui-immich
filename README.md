@@ -114,6 +114,10 @@ unwritable output directory is reported as a `preview` stage error while the
 image still reaches Immich. One failed image never cancels the rest of the
 batch, so receipts for images already uploaded are never lost.
 
+The node prints one summary line per batch, so a working archive is never
+silent. Failures name the file — that name is the argument `retry_archive`
+takes — and a retry hint appears whenever the local PNG still exists.
+
 Receipt values worth knowing:
 
 | Field | Value | Meaning |

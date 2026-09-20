@@ -109,7 +109,40 @@ def _new_archive_report(filename, description, album_id):
 
 def _print_report_errors(report):
     for error in report["errors"]:
-        print(f"[SaveToImmich] {error['stage']} failed: {error['message']}")
+        print(f"[SaveToImmich] {report['filename']}: {error['stage']} failed: {error['message']}")
+
+
+def _print_batch_summary(reports):
+    """Say what happened even when nothing failed.
+
+    A silent node is indistinguishable from one that never ran, and the whole
+    point of a state like album="unconfirmed" is to be read by someone.
+    """
+    if not reports:
+        return
+
+    archived = sum(1 for report in reports if report["upload"] in ("ok", "reused"))
+    print(f"[SaveToImmich] Archived {archived}/{len(reports)} image(s) to Immich.")
+
+    # Point at the recovery tool where it is needed, not only in the README.
+    # Only images whose local preview was written can be retried from disk;
+    # "subfolder" is present exactly when _save_comfy_preview succeeded.
+    lost = [report for report in reports if report["upload"] not in ("ok", "reused")]
+    if lost:
+        print(f"[SaveToImmich] {len(lost)} image(s) did not reach Immich.")
+        if any("subfolder" in report for report in lost):
+            print(
+                "[SaveToImmich] Retry without re-rendering: "
+                "python -m immich_nodes.retry_archive <output png>"
+            )
+
+    unconfirmed = sum(1 for report in reports if report["album"] == "unconfirmed")
+    if unconfirmed:
+        print(
+            f"[SaveToImmich] NOTE: Immich accepted {unconfirmed} album add(s) without "
+            "returning a per-asset confirmation. The images are very likely in the album. "
+            "If a reverse proxy fronts Immich, check it is not stripping response bodies."
+        )
 
 
 def _format_request_error(error):
@@ -545,4 +578,5 @@ class SaveToImmich:
                 results.append(preview)
             reports.append(report)
             _print_report_errors(report)
+        _print_batch_summary(reports)
         return {"ui": {"images": results, "archive": reports}}
