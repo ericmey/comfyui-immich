@@ -6,6 +6,7 @@ import os
 import time
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path, PureWindowsPath
 from typing import ClassVar
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -26,6 +27,12 @@ except ImportError:
 _UPLOAD_PATH_MARKER = "/upload/"
 _SETTLE_TIMEOUT_SECONDS = 5.0
 _SETTLE_POLL_SECONDS = 0.25
+
+# Stage failures worth reporting as a receipt rather than crashing the graph:
+# transport, filesystem and bad-response errors. URLError, HTTPError and
+# TimeoutError are all OSError subclasses; JSONDecodeError is a ValueError.
+# Anything outside this tuple is a bug in this node and must keep propagating.
+_ARCHIVE_ERRORS = (OSError, ValueError)
 
 
 def _load_env(env_path):
@@ -71,6 +78,8 @@ def _multipart_encode(fields, files):
         lines.append(value.encode() if isinstance(value, str) else value)
 
     for name, filename, content_type, data in files:
+        if any(c in filename for c in '\r\n\x00"'):
+            raise ValueError("invalid upload filename")
         lines.append(f"--{boundary}".encode())
         lines.append(
             f'Content-Disposition: form-data; name="{name}"; filename="{filename}"'.encode()
@@ -85,6 +94,22 @@ def _multipart_encode(fields, files):
     body = b"\r\n".join(lines)
     content_type = f"multipart/form-data; boundary={boundary}"
     return body, content_type
+
+
+def _new_archive_report(filename, description, album_id):
+    """Build the per-image receipt every archive path fills in."""
+    return {
+        "filename": filename,
+        "upload": "failed",
+        "description": "not_requested" if not description else "not_attempted",
+        "album": "not_requested" if not album_id else "not_attempted",
+        "errors": [],
+    }
+
+
+def _print_report_errors(report):
+    for error in report["errors"]:
+        print(f"[SaveToImmich] {error['stage']} failed: {error['message']}")
 
 
 def _format_request_error(error):
@@ -211,12 +236,25 @@ class SaveToImmich:
         if folder_paths is None:
             return None
 
-        output_dir = folder_paths.get_output_directory()
-        os.makedirs(output_dir, exist_ok=True)
-        with open(os.path.join(output_dir, filename), "wb") as f:
+        relative = Path(filename.replace("\\", "/"))
+        if (
+            relative.is_absolute()
+            or PureWindowsPath(filename).drive
+            or ".." in relative.parts
+            or any(c in filename for c in '\r\n\x00"')
+        ):
+            raise ValueError("filename_prefix must stay within the ComfyUI output directory")
+        output_dir = Path(folder_paths.get_output_directory()).resolve()
+        target = (output_dir / relative).resolve()
+        if output_dir not in target.parents:
+            raise ValueError("filename_prefix escapes the ComfyUI output directory")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with target.open("xb") as f:
             f.write(png_bytes)
-
-        return {"filename": filename, "subfolder": "", "type": "output"}
+        subfolder = (
+            "" if target.parent == output_dir else target.parent.relative_to(output_dir).as_posix()
+        )
+        return {"filename": target.name, "subfolder": subfolder, "type": "output"}
 
     def _get_asset(self, immich_url, api_key, asset_id):
         """Fetch a single asset. Used to observe where Immich has put the file."""
@@ -271,14 +309,28 @@ class SaveToImmich:
         self._api_request(f"{immich_url}/api/assets/{asset_id}", "PUT", headers, body)
 
     def _add_to_album(self, immich_url, api_key, album_id, asset_id):
-        """Add an asset to an Immich album."""
+        """Add an asset to an Immich album. Returns True if Immich confirmed it."""
         body = json.dumps({"ids": [asset_id]}).encode()
         headers = {
             "x-api-key": api_key,
             "Content-Type": "application/json",
             "Accept": "application/json",
         }
-        self._api_request(f"{immich_url}/api/albums/{album_id}/assets", "PUT", headers, body)
+        result = self._api_request(
+            f"{immich_url}/api/albums/{album_id}/assets", "PUT", headers, body
+        )
+        # Immich reports per-asset failures in a successful HTTP response, so a
+        # 2xx alone proves nothing. But a response with no per-asset body at all
+        # (a 204, or a proxy that strips it) carries no failure either: report
+        # that as unconfirmed rather than inventing either outcome.
+        if not isinstance(result, list):
+            return False
+        entries = [item for item in result if isinstance(item, dict) and item.get("id") == asset_id]
+        if len(entries) != 1 or not (
+            entries[0].get("success") is True or entries[0].get("error") == "duplicate"
+        ):
+            raise ValueError("Immich did not confirm album membership for this asset")
+        return True
 
     _POSITIVE_TITLES: ClassVar[set[str]] = {
         "@prompt",
@@ -359,6 +411,96 @@ class SaveToImmich:
 
         return "\n".join(lines)
 
+    def archive_png(
+        self,
+        png_bytes,
+        filename,
+        *,
+        description="",
+        album_id="",
+        asset_id=None,
+        wait_for_settle=True,
+    ):
+        """Archive existing PNG bytes and report each stage without losing delivery."""
+        report = _new_archive_report(filename, description, album_id)
+        reused = bool(asset_id)
+        try:
+            immich_url, api_key = self._get_config()
+            if not reused:
+                asset_id = self._upload_asset(immich_url, api_key, png_bytes, filename)
+            if not asset_id:
+                raise ValueError("Immich returned no asset ID")
+        except _ARCHIVE_ERRORS as exc:
+            report["errors"].append({"stage": "upload", "message": _format_request_error(exc)})
+            return report
+        # "reused" and "ok" are not the same claim: nothing was uploaded here.
+        report.update(upload="reused" if reused else "ok", asset_id=asset_id)
+        if description:
+            try:
+                if wait_for_settle:
+                    report["storage_settled"] = self._wait_for_storage_settle(
+                        immich_url, api_key, asset_id
+                    )
+                self._set_description(immich_url, api_key, asset_id, description)
+                report["description"] = "ok"
+            except _ARCHIVE_ERRORS as exc:
+                report["description"] = "failed"
+                report["errors"].append(
+                    {"stage": "description", "message": _format_request_error(exc)}
+                )
+        if album_id:
+            try:
+                confirmed = self._add_to_album(immich_url, api_key, album_id, asset_id)
+                report["album"] = "ok" if confirmed else "unconfirmed"
+            except _ARCHIVE_ERRORS as exc:
+                report["album"] = "failed"
+                report["errors"].append({"stage": "album", "message": _format_request_error(exc)})
+        return report
+
+    def _archive_image(
+        self,
+        tensor,
+        filename,
+        *,
+        prompt,
+        extra_pnginfo,
+        description,
+        album_id,
+        wait_for_settle,
+    ):
+        """Encode, deliver and archive one image. Returns (report, preview)."""
+        basename = Path(filename).name
+        try:
+            png_bytes = self._build_png_bytes(tensor, prompt=prompt, extra_pnginfo=extra_pnginfo)
+        except _ARCHIVE_ERRORS as exc:
+            report = _new_archive_report(basename, description, album_id)
+            report["errors"].append({"stage": "encode", "message": _format_request_error(exc)})
+            return report, None
+
+        # A rejected filename_prefix or an unwritable output directory is a
+        # delivery failure, not an archive failure. Immich still gets the image.
+        preview = None
+        preview_error = None
+        try:
+            preview = self._save_comfy_preview(png_bytes, filename)
+        except _ARCHIVE_ERRORS as exc:
+            preview_error = {"stage": "preview", "message": _format_request_error(exc)}
+
+        report = self.archive_png(
+            png_bytes,
+            basename,
+            description=description,
+            album_id=album_id,
+            wait_for_settle=wait_for_settle,
+        )
+        if preview_error:
+            report["errors"].insert(0, preview_error)
+        if preview is not None:
+            report.update(filename=preview["filename"], subfolder=preview.get("subfolder", ""))
+            if report.get("asset_id"):
+                preview["asset_id"] = report["asset_id"]
+        return report, preview
+
     def upload(
         self,
         images,
@@ -369,87 +511,38 @@ class SaveToImmich:
         prompt=None,
         extra_pnginfo=None,
     ):
-        immich_url, api_key = self._get_config()
-
-        # Auto-build description from prompt data when none provided
         if not description:
             description = self._build_auto_description(prompt, character=character)
-
         results = []
-        batch_size = images.shape[0]
-        # One timeout per batch, not per image: if the first asset never leaves
-        # upload/, the storage template engine is off and waiting is pointless.
+        reports = []
         settle_enabled = True
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-
-        print(f"[SaveToImmich] Uploading {batch_size} image(s) to {immich_url}")
-
-        for i in range(batch_size):
-            image_result = None
+        for i in range(images.shape[0]):
+            filename = f"{filename_prefix}_{timestamp}_{i:04d}_{uuid.uuid4().hex[:8]}.png"
+            # Last-resort containment. Images earlier in the batch may already
+            # be in Immich, so an error escaping here would strand exactly the
+            # asset IDs a retry needs. Even a bug becomes a receipt.
             try:
-                png_bytes = self._build_png_bytes(
-                    images[i], prompt=prompt, extra_pnginfo=extra_pnginfo
+                report, preview = self._archive_image(
+                    images[i],
+                    filename,
+                    prompt=prompt,
+                    extra_pnginfo=extra_pnginfo,
+                    description=description,
+                    album_id=album_id,
+                    wait_for_settle=settle_enabled,
                 )
-
-                filename = f"{filename_prefix}_{timestamp}_{i:04d}_{uuid.uuid4().hex[:8]}.png"
-
-                # Local preview first. Atelier and the ComfyUI UI both read
-                # this file from history; Immich is the archive, not delivery.
-                image_result = self._save_comfy_preview(png_bytes, filename) or {
-                    "filename": filename
-                }
-                results.append(image_result)
-
-                asset_id = self._upload_asset(immich_url, api_key, png_bytes, filename)
-                if not asset_id:
-                    print(
-                        f"[SaveToImmich] WARNING: Upload {i + 1}/{batch_size} returned no asset ID"
-                    )
-                    continue
-
-                print(f"[SaveToImmich] Uploaded {i + 1}/{batch_size}: {filename} -> {asset_id}")
-                image_result["asset_id"] = asset_id
-
-                if description:
-                    try:
-                        if settle_enabled and not self._wait_for_storage_settle(
-                            immich_url, api_key, asset_id
-                        ):
-                            settle_enabled = False
-                            print(
-                                "[SaveToImmich] NOTE: asset did not leave upload/ within "
-                                f"{_SETTLE_TIMEOUT_SECONDS:g}s; setting descriptions "
-                                "immediately for the rest of this batch"
-                            )
-                        self._set_description(immich_url, api_key, asset_id, description)
-                    except (HTTPError, URLError) as e:
-                        print(
-                            "[SaveToImmich] WARNING: Failed to set description: "
-                            f"{_format_request_error(e)}"
-                        )
-
-                if album_id:
-                    try:
-                        self._add_to_album(immich_url, api_key, album_id, asset_id)
-                    except (HTTPError, URLError) as e:
-                        print(
-                            "[SaveToImmich] WARNING: Failed to add to album: "
-                            f"{_format_request_error(e)}"
-                        )
-
-            except (HTTPError, URLError) as e:
-                print(
-                    f"[SaveToImmich] ERROR: Failed to upload image {i + 1}/{batch_size}: "
-                    f"{_format_request_error(e)}"
+            except Exception as exc:
+                report = _new_archive_report(Path(filename).name, description, album_id)
+                report["errors"].append(
+                    {"stage": "unexpected", "message": f"{type(exc).__name__}: {exc}"}
                 )
-            except Exception as e:
-                print(f"[SaveToImmich] ERROR: Unexpected error on image {i + 1}/{batch_size}: {e}")
-                if image_result is None:
-                    continue
+                preview = None
 
-        uploaded = sum(1 for item in results if item.get("asset_id"))
-        print(
-            f"[SaveToImmich] Done. {len(results)}/{batch_size} preview(s), "
-            f"{uploaded}/{batch_size} uploaded."
-        )
-        return {"ui": {"images": results}}
+            if report.get("storage_settled") is False:
+                settle_enabled = False
+            if preview is not None:
+                results.append(preview)
+            reports.append(report)
+            _print_report_errors(report)
+        return {"ui": {"images": results, "archive": reports}}

@@ -66,7 +66,7 @@ An output node that uploads images to Immich at the end of a workflow.
 | character | STRING | No | `""` | Who this render is of. Prefixed onto the Immich description as `Character: …`. Atelier fills this from the record; type it by hand in the UI. Not an Immich people/face tag. |
 | description | STRING | No | `""` | Description visible in Immich UI. Empty means auto-build from the graph (character, checkpoint/UNET, sampler, seed, prompt). |
 | album_id | STRING | No | `""` | Immich album UUID to add the image to |
-| filename_prefix | STRING | No | `"ComfyUI"` | Prefix for the uploaded filename |
+| filename_prefix | STRING | No | `"ComfyUI"` | Prefix for the uploaded filename. May include subfolders (`portraits/nova`) within ComfyUI's output directory; absolute paths, `..`, and escaping symlinks are refused. |
 
 #### Hidden Inputs (automatic)
 
@@ -101,7 +101,46 @@ Hand-run graphs and Atelier share this node. Atelier only fills `character`
 with those fields left blank still archives: the node reads the prompt,
 checkpoint or UNET, sampler, and seed itself.
 
-## Updating
+## Archive receipts and recovery
+
+Local preview delivery and Immich archiving have separate outcomes. History
+contains `ui.images` for previews and `ui.archive` for per-image upload,
+description, and album results. Each archive receipt includes an asset ID
+when available and stage-specific errors. A preview alone does not confirm
+archiving. Missing archive configuration also preserves the local preview.
+
+The two directions are independent: a rejected `filename_prefix` or an
+unwritable output directory is reported as a `preview` stage error while the
+image still reaches Immich. One failed image never cancels the rest of the
+batch, so receipts for images already uploaded are never lost.
+
+Receipt values worth knowing:
+
+| Field | Value | Meaning |
+|-------|-------|---------|
+| `upload` | `ok` / `reused` / `failed` | `reused` means an existing asset ID was supplied and nothing was uploaded |
+| `description` | `ok` / `failed` / `not_requested` / `not_attempted` | `not_attempted` means an earlier stage failed first |
+| `album` | `ok` / `unconfirmed` / `failed` / `not_requested` / `not_attempted` | `unconfirmed` means Immich returned success with no per-asset body to verify |
+
+Filename prefixes may include subfolders within ComfyUI's output directory.
+Absolute paths, parent components, and symlinks escaping that directory are
+refused. History reports the correct basename and subfolder for retrieval.
+
+Retry an existing PNG without another GPU render from this node's directory:
+
+```bash
+/path/to/ComfyUI/.venv/bin/python -m immich_nodes.retry_archive /path/to/original.png
+```
+
+This uploads the unchanged PNG and reads its embedded archive description and
+album. If upload already succeeded, add `--asset-id <id>` to retry only metadata.
+Results are JSON; a failed stage produces a nonzero exit code.
+
+Recovery needs the original file. A PNG with no embedded graph, an unreadable
+one, or one holding several archive nodes is refused with a message on stderr
+and exit code 1 rather than archiving with no metadata.
+
+## Updating the installation
 
 ```bash
 cd /path/to/ComfyUI/custom_nodes/comfyui-immich
