@@ -1,23 +1,40 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "comfyui-immich"
 version = "0.2.12"
 description = "ComfyUI custom nodes for Immich integration — upload, metadata, album management"
 readme = "README.md"
-license = {text = "MIT"}
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.10"
 authors = [
     {name = "Eric Meyer"},
 ]
 keywords = ["comfyui", "immich", "image-upload", "custom-node"]
+dependencies = [
+    "numpy>=1.26",
+    "pillow>=10.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/ericmey/comfyui-immich"
+Issues = "https://github.com/ericmey/comfyui-immich/issues"
 
 [project.optional-dependencies]
 dev = [
-    "numpy>=1.26",
-    "pillow>=10.0",
     "pytest>=7.0",
     "ruff>=0.4",
     "mypy>=1.8",
 ]
+
+[tool.setuptools]
+# ComfyUI loads this repo by importing the checkout directory itself, so the
+# root __init__.py is the entrypoint and is deliberately not packaged. Naming
+# the package explicitly keeps tests/ out of the wheel.
+packages = ["immich_nodes"]
 
 [tool.ruff]
 line-length = 100
@@ -32,12 +49,24 @@ ignore = ["N999"]  # ComfyUI requires hyphenated folder names
 
 [tool.mypy]
 python_version = "3.10"
+files = ["immich_nodes"]
+# The checkout directory is named comfyui-immich and carries an __init__.py for
+# ComfyUI, which is not a legal package name. Without this, mypy refuses to run.
+explicit_package_bases = true
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = false
 
 [[tool.mypy.overrides]]
-module = ["PIL.*", "numpy.*"]
+module = ["PIL.*", "folder_paths"]  # folder_paths is injected by ComfyUI at runtime
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["numpy.*"]
+# numpy ships stubs using 3.12-only syntax, which mypy parses even under
+# python_version 3.10. Skip them rather than weaken the version target.
+follow_imports = "skip"
+follow_imports_for_stubs = true  # follow_imports alone does not apply to .pyi
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
