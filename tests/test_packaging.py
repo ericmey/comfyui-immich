@@ -18,7 +18,9 @@ def _declared_requirements():
 
 
 def test_requirements_matches_pyproject_dependencies():
-    # tomllib is stdlib from 3.11; the CI matrix still covers this on 3.12/3.13.
+    # tomllib is stdlib from 3.11; the CI matrix covers this on 3.11/3.12/3.13.
+    # The 3.10 job will skip via importorskip rather than fail; that is fine —
+    # the packaging invariant is already enforced on every newer interpreter.
     tomllib = pytest.importorskip("tomllib")
     with ROOT.joinpath("pyproject.toml").open("rb") as f:
         pyproject = tomllib.load(f)

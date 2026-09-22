@@ -1,14 +1,17 @@
 """ComfyUI output node that uploads generated images to Immich with full metadata."""
 
+import contextlib
+import http.client
 import io
 import json
 import os
 import time
+import urllib.request
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path, PureWindowsPath
 from typing import ClassVar
-from urllib.error import HTTPError, URLError
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 import numpy as np
@@ -19,6 +22,96 @@ try:
     import folder_paths
 except ImportError:
     folder_paths = None
+
+# Bounded read on every Immich call. urlopen's `timeout=` argument bounds
+# the connect phase, and Python's `socket.create_connection` does pin the
+# resulting socket with that timeout too on 3.10+, which makes most reads
+# bounded in practice. We re-pin after connect anyway because the stdlib
+# behaviour is version-dependent: a `socket.makefile()`-wrapped response
+# does not always honour a per-recv timeout once data is buffered. The patch
+# below installs an explicit `settimeout` so the read side is bounded
+# regardless of which CPython version is running ComfyUI. Other plugins
+# using `requests`/`httpx` keep their own behaviour; only urlopen() callers
+# are affected.
+_REQUEST_TIMEOUT_SECONDS = 30.0
+
+
+def _default_user_agent():
+    """Return a User-Agent string with the installed package version.
+
+    Falls back to a fixed string when importlib.metadata cannot find the
+    package (e.g. a developer checkout installed with `pip install -e .`
+    before the metadata was generated). The string never includes the
+    api key, the configured Immich URL, or any other operator input.
+    """
+    try:
+        from importlib.metadata import version
+
+        return f"comfyui-immich/{version('comfyui-immich')}"
+    except Exception:
+        # importlib.metadata raises PackageNotFoundError (a subclass of
+        # ModuleNotFoundError) when the package is not installed in the
+        # current interpreter. Any other exception here would mean our own
+        # code is broken — but a User-Agent header is not worth a crash,
+        # so fall back to a fixed string.
+        return "comfyui-immich/unknown"
+
+
+_original_http_connect = http.client.HTTPConnection.connect
+_original_https_connect = http.client.HTTPSConnection.connect
+
+
+def _pin_read_timeout(self):
+    """Bound the read side after the stdlib finishes connecting.
+
+    The stdlib's `socket.create_connection` does set `settimeout` on the
+    returned socket on 3.10+, but `http.client.HTTPResponse`'s internal
+    state machine (`_safe_read`/`read1`) and the `socket.makefile()` wrapper
+    it uses do not always honour that timeout on partial-body reads. We
+    re-pin after connect to make the bound unconditional across CPython
+    versions and reading paths.
+    """
+    if type(self) is http.client.HTTPConnection:
+        _original_http_connect(self)
+    elif type(self) is http.client.HTTPSConnection:
+        _original_https_connect(self)
+    else:
+        # Subclass (e.g. a connection pool): dispatch through the MRO so we
+        # never recurse into our own patched method.
+        for klass in type(self).__mro__:
+            if klass in (http.client.HTTPConnection, http.client.HTTPSConnection):
+                continue
+            if "connect" in klass.__dict__:
+                klass.__dict__["connect"](self)
+                break
+        else:
+            _original_http_connect(self)
+    # Connect failed → self.sock is None; urlopen surfaces the underlying
+    # connect-timeout error without our help. AttributeError covers the
+    # `None.settimeout` path; OSError covers a closed/broken socket.
+    sock = self.sock
+    if sock is not None:
+        with contextlib.suppress(OSError):
+            sock.settimeout(_REQUEST_TIMEOUT_SECONDS)
+
+
+http.client.HTTPConnection.connect = _pin_read_timeout  # type: ignore[method-assign]
+http.client.HTTPSConnection.connect = _pin_read_timeout  # type: ignore[method-assign]
+
+
+def _install_default_opener():
+    """Install a default OpenerDirector with our User-Agent.
+
+    The connection monkey-patch above already bounds every urlopen call's
+    read side; this just ensures Immich sees a recognisable name instead of
+    `Python-urllib/x.y`.
+    """
+    opener = urllib.request.build_opener()
+    opener.addheaders = [("User-Agent", _default_user_agent())]
+    urllib.request.install_opener(opener)
+
+
+_install_default_opener()
 
 # Immich stores a freshly uploaded asset under upload/ and the storage template
 # engine then moves it into library/. The sidecar write queued by a description
@@ -146,7 +239,13 @@ def _print_batch_summary(reports):
 
 
 def _format_request_error(error):
-    """Return a useful HTTP error string without logging request headers."""
+    """Return a useful HTTP error string without logging request headers.
+
+    Bare `except Exception` around `error.read()` is intentional: the body
+    string is best-effort and any decoder/network error during that read
+    must not mask the original `error.code` / `error.reason`. The broader
+    catch is safe here because nothing else inside this function can throw.
+    """
     if isinstance(error, HTTPError):
         try:
             body = error.read().decode("utf-8", errors="replace").strip()
@@ -210,13 +309,17 @@ class SaveToImmich:
         return _normalize_immich_url(immich_url), api_key.strip()
 
     def _api_request(self, url, method, headers, body=None):
-        """Make an HTTP request and return parsed JSON response."""
+        """Make an HTTP request and return parsed JSON response.
+
+        `timeout=` bounds the connect phase; the read side is bounded by the
+        process-wide patch installed at import time (see `_pin_read_timeout`).
+        """
         req = Request(url, data=body, headers=headers, method=method)
-        with urlopen(req, timeout=30) as resp:
+        with urlopen(req, timeout=_REQUEST_TIMEOUT_SECONDS) as resp:
             data = resp.read()
-            if not data:
-                return {}
-            return json.loads(data.decode())
+        if not data:
+            return {}
+        return json.loads(data.decode())
 
     def _build_png_bytes(self, img_tensor, prompt=None, extra_pnginfo=None):
         """Convert image tensor to PNG bytes with embedded metadata.
@@ -265,7 +368,14 @@ class SaveToImmich:
         return result.get("id")
 
     def _save_comfy_preview(self, png_bytes, filename):
-        """Save a ComfyUI-viewable local preview and return frontend image metadata."""
+        """Save a ComfyUI-viewable local preview and return frontend image metadata.
+
+        Caller is responsible for serialisation: the unique uuid in `upload()`
+        keeps filenames disjoint today, but `open("xb")` and `mkdir(..., exist_ok=True)`
+        would race if the function were ever called from multiple threads.
+        A future concurrent implementation must replace `xb` with a per-target
+        lock or pre-create the directory under a single-shot helper.
+        """
         if folder_paths is None:
             return None
 
@@ -318,10 +428,12 @@ class SaveToImmich:
         while True:
             try:
                 asset = self._get_asset(immich_url, api_key, asset_id)
-            except (HTTPError, URLError):
-                # A transient lookup failure says nothing about where the file
-                # is. Treating it as settled would fail open into the very race
-                # this wait exists to close, so keep trying until the deadline.
+            except OSError:
+                # A transient lookup failure (HTTPError, URLError, socket
+                # timeout, connection reset) says nothing about where the
+                # file is. Treating it as settled would fail open into the
+                # very race this wait exists to close, so keep trying until
+                # the deadline.
                 asset = None
             if asset is not None:
                 path = str(asset.get("originalPath") or "")
@@ -342,7 +454,12 @@ class SaveToImmich:
         self._api_request(f"{immich_url}/api/assets/{asset_id}", "PUT", headers, body)
 
     def _add_to_album(self, immich_url, api_key, album_id, asset_id):
-        """Add an asset to an Immich album. Returns True if Immich confirmed it."""
+        """Add an asset to an Immich album.
+
+        Returns True when Immich confirmed membership, False when the response
+        carries no per-asset body at all (a 204, or a proxy that strips it).
+        Raises ValueError only on a positive failure.
+        """
         body = json.dumps({"ids": [asset_id]}).encode()
         headers = {
             "x-api-key": api_key,
@@ -352,18 +469,27 @@ class SaveToImmich:
         result = self._api_request(
             f"{immich_url}/api/albums/{album_id}/assets", "PUT", headers, body
         )
-        # Immich reports per-asset failures in a successful HTTP response, so a
-        # 2xx alone proves nothing. But a response with no per-asset body at all
-        # (a 204, or a proxy that strips it) carries no failure either: report
-        # that as unconfirmed rather than inventing either outcome.
+        # Immich reports per-asset failures inside a successful HTTP response,
+        # so a 2xx alone proves nothing. Two outcomes carry no per-asset body:
+        #   - an empty body (a 204, or a body-stripping proxy): report unconfirmed
+        #   - a per-asset entry with neither `success` nor an explicit
+        #     `error: "duplicate"`: same situation, also unconfirmed.
+        # Only an entry that explicitly says `success: False` is a failure.
         if not isinstance(result, list):
             return False
         entries = [item for item in result if isinstance(item, dict) and item.get("id") == asset_id]
-        if len(entries) != 1 or not (
-            entries[0].get("success") is True or entries[0].get("error") == "duplicate"
-        ):
-            raise ValueError("Immich did not confirm album membership for this asset")
-        return True
+        if len(entries) != 1:
+            # Either zero matches (we weren't even in the response) or many
+            # matches (a real ambiguity). Either way the body didn't confirm
+            # membership.
+            return False
+        entry = entries[0]
+        if entry.get("success") is True or entry.get("error") == "duplicate":
+            return True
+        if "success" in entry and entry.get("success") is False:
+            raise ValueError(f"Immich refused album membership: {entry.get('error')!r}")
+        # No `success` field at all → treat as unconfirmed, not failure.
+        return False
 
     _POSITIVE_TITLES: ClassVar[set[str]] = {
         "@prompt",
@@ -555,6 +681,15 @@ class SaveToImmich:
             # Last-resort containment. Images earlier in the batch may already
             # be in Immich, so an error escaping here would strand exactly the
             # asset IDs a retry needs. Even a bug becomes a receipt.
+            #
+            # The `unexpected` stage is intentionally distinct from
+            # `upload`/`encode`/`preview`/`description`/`album`. A non-_ARCHIVE_ERRORS
+            # exception escaping `_archive_image` is a bug in this node (a
+            # malformed tensor raises TypeError from PIL; a bad filename_prefix
+            # raises ValueError; HTTP raises OSError). Catching here is
+            # deliberate: it keeps the receipt vocabulary honest — `unexpected`
+            # means "this should not happen, please file an issue" — rather than
+            # letting a TypeError masquerade as a generic upload failure.
             try:
                 report, preview = self._archive_image(
                     images[i],

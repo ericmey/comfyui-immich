@@ -138,7 +138,10 @@ Retry an existing PNG without another GPU render from this node's directory:
 
 This uploads the unchanged PNG and reads its embedded archive description and
 album. If upload already succeeded, add `--asset-id <id>` to retry only metadata.
-Results are JSON; a failed stage produces a nonzero exit code.
+Results are JSON; a non-zero exit code indicates at least one stage errored
+(an `errors` entry in the report). `unconfirmed` album states are not
+treated as errors and produce exit code 0 — they signal "check whether a
+proxy is stripping the response body" rather than a failed archive.
 
 Recovery needs the original file. A PNG with no embedded graph, an unreadable
 one, or one holding several archive nodes is refused with a message on stderr

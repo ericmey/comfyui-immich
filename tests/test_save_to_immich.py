@@ -1,5 +1,6 @@
 """Tests for SaveToImmich node."""
 
+import http.client
 import io
 import json
 import sys
@@ -158,6 +159,35 @@ class TestSaveToImmich:
 
         assert result == {}
 
+    @patch("immich_nodes.save_to_immich.urlopen")
+    def test_api_request_html_body_becomes_stage_failure(self, mock_urlopen):
+        """A reverse proxy returning HTML must surface as a ValueError, not crash."""
+        node = SaveToImmich()
+        html_resp = MagicMock()
+        html_resp.read.return_value = b"<html>502 Bad Gateway</html>"
+        html_resp.__enter__ = lambda s: s
+        html_resp.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = html_resp
+
+        with pytest.raises(ValueError, match="Expecting value"):
+            node._api_request("https://immich.test/api/assets", "GET", {})
+
+    def test_html_body_during_upload_lands_as_upload_stage_failure(self, image_batch):
+        """End-to-end: an HTML 200 becomes a receipt, not a crash."""
+        node = SaveToImmich()
+        with (
+            patch.object(node, "_get_config", return_value=("http://example.invalid", "key")),
+            patch.object(node, "_build_png_bytes", return_value=b"png"),
+            patch.object(node, "_save_comfy_preview", return_value={"filename": "kept.png"}),
+            patch.object(node, "_api_request") as api,
+        ):
+            api.side_effect = ValueError("Expecting value: line 1 column 1 (char 0)")
+            result = node.upload(image_batch)
+
+        report = result["ui"]["archive"][0]
+        assert report["upload"] == "failed"
+        assert report["errors"][0]["stage"] == "upload"
+
     def test_save_comfy_preview_writes_output_file(self, tmp_path):
         node = SaveToImmich()
         fake_folder_paths = MagicMock()
@@ -170,7 +200,7 @@ class TestSaveToImmich:
         assert (tmp_path / "preview.png").read_bytes() == b"png-bytes"
 
     @patch("immich_nodes.save_to_immich.urlopen")
-    def test_upload_success(self, mock_urlopen):
+    def test_upload_success(self, mock_urlopen, image_batch):
         """Full upload flow with mocked HTTP."""
         node = SaveToImmich()
 
@@ -194,14 +224,6 @@ class TestSaveToImmich:
 
         mock_urlopen.side_effect = [upload_resp, settle_resp, desc_resp]
 
-        # Create fake image tensor (batch of 1)
-        mock_images = MagicMock()
-        mock_images.shape = [1]
-        mock_tensor = MagicMock()
-        mock_tensor.cpu.return_value = mock_tensor
-        mock_tensor.numpy.return_value = np.random.rand(32, 32, 3).astype(np.float32)
-        mock_images.__getitem__ = lambda s, i: mock_tensor
-
         with (
             patch.object(node, "_get_config", return_value=("https://immich.test", "test-key")),
             patch.object(
@@ -211,7 +233,7 @@ class TestSaveToImmich:
             ),
         ):
             result = node.upload(
-                mock_images,
+                image_batch,
                 description="test image",
                 filename_prefix="test",
             )
@@ -297,16 +319,9 @@ class TestSaveToImmich:
         assert "Positive: a kitchen" in text
 
     @patch("immich_nodes.save_to_immich.urlopen")
-    def test_preview_is_kept_when_upload_fails(self, mock_urlopen):
+    def test_preview_is_kept_when_upload_fails(self, mock_urlopen, image_batch):
         node = SaveToImmich()
         mock_urlopen.side_effect = URLError("immich down")
-
-        mock_images = MagicMock()
-        mock_images.shape = [1]
-        mock_tensor = MagicMock()
-        mock_tensor.cpu.return_value = mock_tensor
-        mock_tensor.numpy.return_value = np.random.rand(32, 32, 3).astype(np.float32)
-        mock_images.__getitem__ = lambda s, i: mock_tensor
 
         with (
             patch.object(node, "_get_config", return_value=("https://immich.test", "test-key")),
@@ -316,7 +331,7 @@ class TestSaveToImmich:
                 return_value={"filename": "kept.png", "subfolder": "", "type": "output"},
             ) as preview,
         ):
-            result = node.upload(mock_images, filename_prefix="test")
+            result = node.upload(image_batch, filename_prefix="test")
 
         preview.assert_called_once()
         assert len(result["ui"]["images"]) == 1
@@ -394,10 +409,26 @@ class TestStorageSettle:
         assert node._wait_for_storage_settle("https://immich.test", "key", "asset-123") is False
         assert mock_urlopen.call_count > 1
 
+    @patch("immich_nodes.save_to_immich.time.sleep")
+    @patch("immich_nodes.save_to_immich.urlopen")
+    def test_socket_timeout_during_settle_is_treated_as_transient(self, mock_urlopen, mock_sleep):
+        """A socket timeout mid-poll is not evidence the file has settled."""
+        node = SaveToImmich()
+        mock_urlopen.side_effect = [
+            TimeoutError("read timeout"),
+            self._asset_resp("/data/upload/user/ab/cd/asset-123.png"),
+            self._asset_resp("/data/library/admin/2026/2026-08-19/render.png"),
+        ]
+
+        assert node._wait_for_storage_settle("https://immich.test", "key", "asset-123") is True
+        assert mock_urlopen.call_count == 3
+
     @patch("immich_nodes.save_to_immich._SETTLE_TIMEOUT_SECONDS", 0.05)
     @patch("immich_nodes.save_to_immich.time.sleep")
     @patch("immich_nodes.save_to_immich.urlopen")
-    def test_description_is_still_set_when_settle_times_out(self, mock_urlopen, mock_sleep):
+    def test_description_is_still_set_when_settle_times_out(
+        self, mock_urlopen, mock_sleep, image_batch
+    ):
         """A stuck move must degrade to the old behaviour, not drop the caption."""
         node = SaveToImmich()
 
@@ -423,18 +454,11 @@ class TestStorageSettle:
 
         mock_urlopen.side_effect = responses
 
-        mock_images = MagicMock()
-        mock_images.shape = [1]
-        mock_tensor = MagicMock()
-        mock_tensor.cpu.return_value = mock_tensor
-        mock_tensor.numpy.return_value = np.random.rand(32, 32, 3).astype(np.float32)
-        mock_images.__getitem__ = lambda s, i: mock_tensor
-
         with (
             patch.object(node, "_get_config", return_value=("https://immich.test", "test-key")),
             patch.object(node, "_save_comfy_preview", return_value={"filename": "p.png"}),
         ):
-            result = node.upload(mock_images, description="caption", filename_prefix="test")
+            result = node.upload(image_batch, description="caption", filename_prefix="test")
 
         assert result["ui"]["images"][0]["asset_id"] == "asset-123"
         put_calls = [c for c in mock_urlopen.call_args_list if c.args[0].method == "PUT"]
@@ -478,16 +502,14 @@ def test_preview_reports_safe_subfolder_and_refuses_symlink_escape(tmp_path):
     assert not (tmp_path / "outside.png").exists()
 
 
-def test_archive_failure_reports_stage_and_keeps_preview():
+def test_archive_failure_reports_stage_and_keeps_preview(image_batch):
     node = SaveToImmich()
-    images = MagicMock()
-    images.shape = [1]
     with (
         patch.object(node, "_get_config", side_effect=ValueError("missing configuration")),
         patch.object(node, "_build_png_bytes", return_value=b"png"),
         patch.object(node, "_save_comfy_preview", return_value={"filename": "kept.png"}),
     ):
-        result = node.upload(images)
+        result = node.upload(image_batch)
     assert result["ui"]["images"][0]["filename"] == "kept.png"
     report = result["ui"]["archive"][0]
     assert report["upload"] == "failed"
@@ -555,18 +577,37 @@ def test_existing_asset_id_never_reuploads_png():
 @pytest.mark.parametrize(
     "result",
     [
-        [],
         [{"id": "asset", "success": False, "error": "not_found"}],
-        [{"id": "other", "success": True}],
     ],
 )
 def test_album_item_failure_is_not_http_success(result):
+    """An entry that explicitly says success=False is a genuine failure."""
     node = SaveToImmich()
     with (
         patch.object(node, "_api_request", return_value=result),
         pytest.raises(ValueError, match="album membership"),
     ):
         node._add_to_album("https://immich.test", "key", "album", "asset")
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        [],  # no per-asset entries at all
+        [{"id": "other", "success": True}],  # entry for a different asset
+        [{"id": "asset"}],  # entry for our asset but no `success` field
+    ],
+)
+def test_album_ambiguous_response_is_unconfirmed_not_failed(result):
+    """An entry that neither confirms nor explicitly fails is unconfirmed.
+
+    Mirrors the empty-body case: Immich said nothing useful, so we cannot
+    claim success or failure. The caller downgrades the receipt to
+    `album: "unconfirmed"` rather than throwing.
+    """
+    node = SaveToImmich()
+    with patch.object(node, "_api_request", return_value=result):
+        assert node._add_to_album("https://immich.test", "key", "album", "asset") is False
 
 
 @pytest.mark.parametrize("result", [{}, None, ""])
@@ -601,11 +642,10 @@ def test_album_membership_accepts_insert_or_existing_member(item):
         node._add_to_album("https://immich.test", "key", "album", "asset")
 
 
-def test_one_bad_image_keeps_the_rest_of_the_batch_and_its_receipts():
+def test_one_bad_image_keeps_the_rest_of_the_batch_and_its_receipts(image_batch_of_three):
     """An encode failure mid-batch must not strand asset IDs already in Immich."""
     node = SaveToImmich()
-    images = MagicMock()
-    images.shape = [3]
+    images = image_batch_of_three
     encoded = {"n": 0}
 
     def encode(tensor, prompt=None, extra_pnginfo=None):
@@ -629,11 +669,10 @@ def test_one_bad_image_keeps_the_rest_of_the_batch_and_its_receipts():
     assert len(result["ui"]["images"]) == 2
 
 
-def test_rejected_filename_prefix_still_archives_to_immich():
+def test_rejected_filename_prefix_still_archives_to_immich(image_batch):
     """Preview delivery and archiving fail independently, in both directions."""
     node = SaveToImmich()
-    images = MagicMock()
-    images.shape = [1]
+    images = image_batch
     with (
         patch.object(node, "_get_config", return_value=("http://example.invalid", "key")),
         patch.object(node, "_build_png_bytes", return_value=b"png"),
@@ -710,11 +749,10 @@ def test_retry_cli_reports_input_errors_without_a_traceback(tmp_path, capsys):
     assert "nothing to recover" in capsys.readouterr().err
 
 
-def test_an_unexpected_bug_still_leaves_receipts_for_the_rest_of_the_batch():
+def test_an_unexpected_bug_still_leaves_receipts_for_the_rest_of_the_batch(image_batch_of_two):
     """Containment is unconditional: even a TypeError becomes a receipt."""
     node = SaveToImmich()
-    images = MagicMock()
-    images.shape = [2]
+    images = image_batch_of_two
     with (
         patch.object(node, "_get_config", return_value=("http://example.invalid", "key")),
         patch.object(node, "_build_png_bytes", return_value=b"png"),
@@ -730,11 +768,10 @@ def test_an_unexpected_bug_still_leaves_receipts_for_the_rest_of_the_batch():
     assert reports[1]["asset_id"] == "asset-2"
 
 
-def test_a_working_archive_is_not_silent(capsys):
+def test_a_working_archive_is_not_silent(capsys, image_batch_of_two):
     """Silence is indistinguishable from a node that never ran."""
     node = SaveToImmich()
-    images = MagicMock()
-    images.shape = [2]
+    images = image_batch_of_two
     with (
         patch.object(node, "_get_config", return_value=("http://example.invalid", "key")),
         patch.object(node, "_build_png_bytes", return_value=b"png"),
@@ -745,11 +782,10 @@ def test_a_working_archive_is_not_silent(capsys):
     assert "Archived 2/2 image(s)" in capsys.readouterr().out
 
 
-def test_unconfirmed_album_is_explained_on_the_console(capsys):
+def test_unconfirmed_album_is_explained_on_the_console(capsys, image_batch):
     """The state exists to be read; a receipt nobody sees is worthless."""
     node = SaveToImmich()
-    images = MagicMock()
-    images.shape = [1]
+    images = image_batch
     with (
         patch.object(node, "_get_config", return_value=("http://example.invalid", "key")),
         patch.object(node, "_build_png_bytes", return_value=b"png"),
@@ -800,11 +836,10 @@ def test_retry_cli_explains_an_unconfirmed_album(tmp_path, capsys):
     assert "proxy is stripping response bodies" in capsys.readouterr().err
 
 
-def test_failure_names_the_file_and_points_at_the_recovery_tool(capsys):
+def test_failure_names_the_file_and_points_at_the_recovery_tool(capsys, image_batch_of_two):
     """The named file is exactly the argument retry_archive takes."""
     node = SaveToImmich()
-    images = MagicMock()
-    images.shape = [2]
+    images = image_batch_of_two
     with (
         patch.object(node, "_get_config", return_value=("http://example.invalid", "key")),
         patch.object(node, "_build_png_bytes", return_value=b"png"),
@@ -822,11 +857,10 @@ def test_failure_names_the_file_and_points_at_the_recovery_tool(capsys):
     assert "retry_archive" in out
 
 
-def test_no_retry_hint_when_there_is_no_local_png_to_retry_from(capsys):
+def test_no_retry_hint_when_there_is_no_local_png_to_retry_from(capsys, image_batch):
     """Preview and upload both failed: nothing on disk, so the hint would lie."""
     node = SaveToImmich()
-    images = MagicMock()
-    images.shape = [1]
+    images = image_batch
     with (
         patch.object(node, "_get_config", return_value=("http://example.invalid", "key")),
         patch.object(node, "_build_png_bytes", return_value=b"png"),
@@ -838,3 +872,63 @@ def test_no_retry_hint_when_there_is_no_local_png_to_retry_from(capsys):
     out = capsys.readouterr().out
     assert "1 image(s) did not reach Immich" in out
     assert "retry_archive" not in out
+
+
+class TestReadTimeoutPatch:
+    """The stdlib monkey-patch closes the urlopen read-side timeout gap."""
+
+    def test_pin_read_timeout_calls_settimeout_after_connect(self):
+        from immich_nodes import save_to_immich as m
+
+        # Use a real HTTPConnection (not a Mock) so the `type(self) is ...`
+        # dispatch hits. Replace the original connect with a stub so the test
+        # doesn't need a live socket.
+        sock = MagicMock()
+
+        def fake_original(self):
+            self.sock = sock
+
+        with patch.object(m, "_original_http_connect", fake_original):
+            conn = http.client.HTTPConnection.__new__(http.client.HTTPConnection)
+            m._pin_read_timeout(conn)
+
+        assert sock.settimeout.called
+        assert sock.settimeout.call_args.args == (m._REQUEST_TIMEOUT_SECONDS,)
+
+    def test_pin_read_timeout_is_idempotent_when_connect_failed(self):
+        """If the original connect raises, sock stays None; settimeout would raise too."""
+        from immich_nodes import save_to_immich as m
+
+        def failing_original(self):
+            # stdlib connect() sets self.sock to a SocketType before raising
+            # on handshake failures, but we want the "no socket at all" path.
+            self.sock = None
+
+        with patch.object(m, "_original_http_connect", failing_original):
+            conn = http.client.HTTPConnection.__new__(http.client.HTTPConnection)
+            m._pin_read_timeout(conn)  # must not raise
+
+        assert conn.sock is None
+
+    def test_subclass_with_own_connect_is_routed_through_mro(self):
+        """Subclasses must not recurse into the patched base connect."""
+        from immich_nodes import save_to_immich as m
+
+        called = {"n": 0}
+
+        class _Pool(http.client.HTTPConnection):
+            def connect(self):  # installs own behaviour on the subclass
+                called["n"] += 1
+                self.sock = MagicMock()
+
+        pool = _Pool.__new__(_Pool)
+        m._pin_read_timeout(pool)
+        assert called["n"] == 1
+        assert pool.sock.settimeout.called
+        assert pool.sock.settimeout.call_args.args == (m._REQUEST_TIMEOUT_SECONDS,)
+
+    def test_request_timeout_is_a_finite_positive_number(self):
+        from immich_nodes import save_to_immich as m
+
+        assert m._REQUEST_TIMEOUT_SECONDS > 0
+        assert m._REQUEST_TIMEOUT_SECONDS <= 120  # not absurdly long
