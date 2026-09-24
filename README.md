@@ -7,7 +7,7 @@ Custom nodes for [ComfyUI](https://github.com/comfyanonymous/ComfyUI) that integ
 - **Save to Immich** — Upload generated images directly to your Immich server
 - Full workflow and prompt metadata embedded in PNG (drag-drop back into ComfyUI to reproduce)
 - ComfyUI-viewable local preview written before upload, so a down Immich
-  does not eat the render (Atelier and the UI both read this file)
+  does not eat the render (the UI and API clients both read this file)
 - Optional character label, album assignment, and description tagging
 - Immich v3-compatible upload payloads
 - Per-image error handling — one failure doesn't crash the batch
@@ -63,7 +63,7 @@ An output node that uploads images to Immich at the end of a workflow.
 | Input | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | images | IMAGE | Yes | — | Image tensor from the pipeline |
-| character | STRING | No | `""` | Who this render is of. Prefixed onto the Immich description as `Character: …`. Atelier fills this from the record; type it by hand in the UI. Not an Immich people/face tag. |
+| character | STRING | No | `""` | Who this render is of. Prefixed onto the Immich description as `Character: …`. Automation that drives ComfyUI through its API can fill it; in the UI, type it by hand. Not an Immich people/face tag. |
 | description | STRING | No | `""` | Description visible in Immich UI. Empty means auto-build from the graph (character, checkpoint/UNET, sampler, seed, prompt). |
 | album_id | STRING | No | `""` | Immich album UUID to add the image to |
 | filename_prefix | STRING | No | `"ComfyUI"` | Prefix for the uploaded filename. May include subfolders (`portraits/nova`) within ComfyUI's output directory; absolute paths, `..`, and escaping symlinks are refused. |
@@ -80,7 +80,7 @@ An output node that uploads images to Immich at the end of a workflow.
 Each uploaded image includes:
 
 - **PNG metadata**: Full ComfyUI workflow + prompt data (same format as the built-in SaveImage node). You can drag the image back into ComfyUI to load the exact workflow that created it.
-- **ComfyUI preview**: A local output copy written *before* the upload. The UI and Atelier download this file from history even if Immich is unreachable.
+- **ComfyUI preview**: A local output copy written *before* the upload. The UI and API clients download this file from history even if Immich is unreachable.
 - **Immich description**: The `description` field if you filled it, otherwise an auto-built caption from the graph. A filled `character` is always prefixed.
 - **Album placement**: If `album_id` is provided, the image is added to that album immediately after upload.
 
@@ -94,12 +94,13 @@ KSampler → VAE Decode → Save to Immich
 
 Use it **instead of** SaveImage when you want one copy. Running both publishes
 the same picture twice (re-encoded) because each output node writes its own
-history entry — Atelier and a hand-run graph both see that as two files.
+history entry, so anything reading the history sees two files.
 
-Hand-run graphs and Atelier share this node. Atelier only fills `character`
-(and optional `description` / `album_id`). A graph opened in the ComfyUI UI
-with those fields left blank still archives: the node reads the prompt,
-checkpoint or UNET, sampler, and seed itself.
+The node works the same whether a graph is run by hand or queued by a script
+through ComfyUI's API. A script typically fills only `character` (and
+optionally `description` / `album_id`). A graph with those fields left blank
+still archives: the node reads the prompt, checkpoint or UNET, sampler, and
+seed itself.
 
 ## Archive receipts and recovery
 
@@ -154,7 +155,44 @@ cd /path/to/ComfyUI/custom_nodes/comfyui-immich
 git pull
 ```
 
-Your `.env` file is preserved — it's in `.gitignore`.
+Your `.env` file is preserved — it's in `.gitignore`. A reinstall that
+replaces the whole folder (for example through a package manager) does
+**not** keep it; back it up first, or set `IMMICH_URL` and `IMMICH_API_KEY`
+as environment variables instead.
+
+## Privacy and security
+
+- **Your workflow travels with every image.** Each uploaded PNG embeds the
+  full ComfyUI workflow and prompt, exactly like the built-in SaveImage node.
+  Anyone who can download the original from Immich (for example through a
+  shared album or link) can read your prompts and reload your graph.
+- **The API key is never stored in a workflow.** It is read from the
+  environment or `.env`, not from a node input, so it does not end up in
+  saved workflows or in PNG metadata.
+- **Use a dedicated key.** Create a key just for ComfyUI so you can revoke it
+  on its own. If your Immich version lets you restrict a key, it needs to
+  upload assets, read and update them (for the description), and add them to
+  albums.
+- **Network scope.** The node sends requests only to your `IMMICH_URL`
+  (through your system proxy, if `HTTP(S)_PROXY` is set), and its timeouts
+  apply only to its own requests. It does not change networking
+  for other nodes.
+
+## Compatibility
+
+- Python 3.10 or newer (the same as ComfyUI)
+- Immich with the v3 upload API
+- No dependencies beyond what ComfyUI already ships (Pillow, NumPy)
+
+## Troubleshooting
+
+| Symptom | Likely cause |
+|---|---|
+| `IMMICH_URL not set` / `IMMICH_API_KEY not set` | No `.env` in this node's folder and no environment variable. Copy `.env.example` to `.env` and fill it in, then restart ComfyUI. |
+| Upload fails with HTTP 401 or 403 | The key is wrong, revoked, or missing a permission (see *Privacy and security*). |
+| Upload fails with a connection or timeout error | `IMMICH_URL` is unreachable from the machine running ComfyUI. Open it in a browser **on that machine**. The local preview is still saved. |
+| `album` receipt is `unconfirmed` | Immich returned success without a per-asset body, often because a proxy strips it. Check the album in Immich. |
+| Image in Immich but no description | Check the `description` stage in the receipt, then use `retry_archive` with `--asset-id` to retry only the metadata. |
 
 ## License
 
