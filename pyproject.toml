@@ -22,6 +22,11 @@ dependencies = [
 [project.urls]
 Homepage = "https://github.com/ericmey/comfyui-immich"
 Issues = "https://github.com/ericmey/comfyui-immich/issues"
+Repository = "https://github.com/ericmey/comfyui-immich"
+
+[tool.comfy]
+PublisherId = "ericmey"
+DisplayName = "Save to Immich"
 
 [project.optional-dependencies]
 dev = [
