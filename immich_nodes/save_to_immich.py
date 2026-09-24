@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path, PureWindowsPath
 from typing import ClassVar
 from urllib.error import HTTPError
-from urllib.request import Request, urlopen
+from urllib.request import Request
 
 import numpy as np
 from PIL import Image
@@ -23,16 +23,20 @@ try:
 except ImportError:
     folder_paths = None
 
-# Bounded read on every Immich call. urlopen's `timeout=` argument bounds
-# the connect phase, and Python's `socket.create_connection` does pin the
-# resulting socket with that timeout too on 3.10+, which makes most reads
-# bounded in practice. We re-pin after connect anyway because the stdlib
-# behaviour is version-dependent: a `socket.makefile()`-wrapped response
-# does not always honour a per-recv timeout once data is buffered. The patch
-# below installs an explicit `settimeout` so the read side is bounded
-# regardless of which CPython version is running ComfyUI. Other plugins
-# using `requests`/`httpx` keep their own behaviour; only urlopen() callers
-# are affected.
+# Every Immich call is bounded, and only Immich calls are.
+#
+# `urlopen(timeout=)` bounds the connect phase, and on CPython 3.10+ the socket
+# it returns carries that timeout for reads too. But a `socket.makefile()`-
+# wrapped response does not always honour it on partial-body reads, so this
+# module's own connection classes re-pin the timeout after connect. They are
+# reached only through the private opener below.
+#
+# Nothing here modifies http.client or urllib for the rest of the process. An
+# earlier version patched HTTPConnection.connect and HTTPSConnection.connect
+# globally and installed a global opener: that forced this node's timeout and
+# User-Agent onto every other node, and it sent HTTPS subclasses without their
+# own connect() down the plain-HTTP connect, skipping TLS. See
+# TestNoProcessWideSideEffects.
 _REQUEST_TIMEOUT_SECONDS = 30.0
 
 
@@ -57,61 +61,49 @@ def _default_user_agent():
         return "comfyui-immich/unknown"
 
 
-_original_http_connect = http.client.HTTPConnection.connect
-_original_https_connect = http.client.HTTPSConnection.connect
-
-
-def _pin_read_timeout(self):
-    """Bound the read side after the stdlib finishes connecting.
-
-    The stdlib's `socket.create_connection` does set `settimeout` on the
-    returned socket on 3.10+, but `http.client.HTTPResponse`'s internal
-    state machine (`_safe_read`/`read1`) and the `socket.makefile()` wrapper
-    it uses do not always honour that timeout on partial-body reads. We
-    re-pin after connect to make the bound unconditional across CPython
-    versions and reading paths.
-    """
-    if type(self) is http.client.HTTPConnection:
-        _original_http_connect(self)
-    elif type(self) is http.client.HTTPSConnection:
-        _original_https_connect(self)
-    else:
-        # Subclass (e.g. a connection pool): dispatch through the MRO so we
-        # never recurse into our own patched method.
-        for klass in type(self).__mro__:
-            if klass in (http.client.HTTPConnection, http.client.HTTPSConnection):
-                continue
-            if "connect" in klass.__dict__:
-                klass.__dict__["connect"](self)
-                break
-        else:
-            _original_http_connect(self)
-    # Connect failed → self.sock is None; urlopen surfaces the underlying
-    # connect-timeout error without our help. AttributeError covers the
-    # `None.settimeout` path; OSError covers a closed/broken socket.
-    sock = self.sock
+def _pin_read_timeout(sock):
+    """Re-pin the read timeout on a freshly connected socket (None-safe)."""
     if sock is not None:
         with contextlib.suppress(OSError):
             sock.settimeout(_REQUEST_TIMEOUT_SECONDS)
 
 
-http.client.HTTPConnection.connect = _pin_read_timeout  # type: ignore[method-assign]
-http.client.HTTPSConnection.connect = _pin_read_timeout  # type: ignore[method-assign]
+class _BoundedHTTPConnection(http.client.HTTPConnection):
+    def connect(self):
+        super().connect()
+        _pin_read_timeout(self.sock)
 
 
-def _install_default_opener():
-    """Install a default OpenerDirector with our User-Agent.
-
-    The connection monkey-patch above already bounds every urlopen call's
-    read side; this just ensures Immich sees a recognisable name instead of
-    `Python-urllib/x.y`.
-    """
-    opener = urllib.request.build_opener()
-    opener.addheaders = [("User-Agent", _default_user_agent())]
-    urllib.request.install_opener(opener)
+class _BoundedHTTPSConnection(http.client.HTTPSConnection):
+    def connect(self):
+        super().connect()  # TLS handshake happens here, as in the stdlib
+        _pin_read_timeout(self.sock)
 
 
-_install_default_opener()
+class _BoundedHTTPHandler(urllib.request.HTTPHandler):
+    def http_open(self, req):
+        return self.do_open(_BoundedHTTPConnection, req)
+
+
+class _BoundedHTTPSHandler(urllib.request.HTTPSHandler):
+    def https_open(self, req):
+        # Mirror the stdlib's https_open. CPython 3.10/3.11 also pass
+        # check_hostname; 3.12+ folded it into the context and dropped it.
+        kwargs = {"context": self._context}
+        if hasattr(self, "_check_hostname"):
+            kwargs["check_hostname"] = self._check_hostname
+        return self.do_open(_BoundedHTTPSConnection, req, **kwargs)
+
+
+# build_opener drops the default HTTP/HTTPS handlers when subclasses are given.
+_OPENER = urllib.request.build_opener(_BoundedHTTPHandler, _BoundedHTTPSHandler)
+_OPENER.addheaders = [("User-Agent", _default_user_agent())]
+
+
+def urlopen(req, timeout=_REQUEST_TIMEOUT_SECONDS):
+    """This module's only way onto the network: the private, bounded opener."""
+    return _OPENER.open(req, timeout=timeout)
+
 
 # Immich stores a freshly uploaded asset under upload/ and the storage template
 # engine then moves it into library/. The sidecar write queued by a description
@@ -311,8 +303,8 @@ class SaveToImmich:
     def _api_request(self, url, method, headers, body=None):
         """Make an HTTP request and return parsed JSON response.
 
-        `timeout=` bounds the connect phase; the read side is bounded by the
-        process-wide patch installed at import time (see `_pin_read_timeout`).
+        `timeout=` bounds the connect phase; the read side is re-pinned by this
+        module's own connection classes (see `_BoundedHTTPSConnection`).
         """
         req = Request(url, data=body, headers=headers, method=method)
         with urlopen(req, timeout=_REQUEST_TIMEOUT_SECONDS) as resp:
