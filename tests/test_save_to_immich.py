@@ -1,11 +1,16 @@
 """Tests for SaveToImmich node."""
 
+import contextlib
 import http.client
 import io
 import json
+import socket
 import sys
+import threading
+import urllib.request
 from unittest.mock import MagicMock, patch
 from urllib.error import URLError
+from urllib.request import Request
 
 import numpy as np
 import pytest
@@ -874,58 +879,125 @@ def test_no_retry_hint_when_there_is_no_local_png_to_retry_from(capsys, image_ba
     assert "retry_archive" not in out
 
 
-class TestReadTimeoutPatch:
-    """The stdlib monkey-patch closes the urlopen read-side timeout gap."""
+def _first_bytes_from(send):
+    """Run `send(port)` against a local listener and return the first bytes it received."""
+    server = socket.socket()
+    server.bind(("127.0.0.1", 0))
+    server.listen(1)
+    port = server.getsockname()[1]
+    received = []
 
-    def test_pin_read_timeout_calls_settimeout_after_connect(self):
+    def accept():
+        conn, _ = server.accept()
+        conn.settimeout(3)
+        try:
+            received.append(conn.recv(5))
+        finally:
+            conn.close()
+
+    thread = threading.Thread(target=accept, daemon=True)
+    thread.start()
+    with contextlib.suppress(Exception):
+        send(port)
+    thread.join(timeout=5)
+    server.close()
+    return received[0] if received else b""
+
+
+class TestNoProcessWideSideEffects:
+    """Importing the node must not change networking for the rest of ComfyUI."""
+
+    def test_import_leaves_http_client_untouched(self):
+        from immich_nodes import save_to_immich  # noqa: F401
+
+        assert http.client.HTTPConnection.connect.__module__ == "http.client"
+        assert http.client.HTTPSConnection.connect.__module__ == "http.client"
+
+    def test_import_installs_no_global_opener(self):
+        from immich_nodes import save_to_immich  # noqa: F401
+
+        opener = urllib.request._opener
+        headers = dict(opener.addheaders) if opener is not None else {}
+        assert not headers.get("User-Agent", "").startswith("comfyui-immich")
+
+    def test_https_subclass_still_does_tls_after_import(self):
+        """Regression: the old global patch sent this subclass down plain HTTP."""
+        from immich_nodes import save_to_immich  # noqa: F401
+
+        class ThirdPartyHTTPS(http.client.HTTPSConnection):
+            pass  # no connect() of its own
+
+        def send(port):
+            conn = ThirdPartyHTTPS("127.0.0.1", port, timeout=3)
+            conn.request("GET", "/", headers={"Authorization": "Bearer not-a-real-token"})
+
+        first = _first_bytes_from(send)
+        assert first[:1] == b"\x16", f"expected a TLS handshake, got {first!r}"
+
+
+class TestScopedTimeouts:
+    """Immich calls go through this module's own bounded connections only."""
+
+    def test_bounded_https_pins_timeout_after_connect(self):
         from immich_nodes import save_to_immich as m
 
-        # Use a real HTTPConnection (not a Mock) so the `type(self) is ...`
-        # dispatch hits. Replace the original connect with a stub so the test
-        # doesn't need a live socket.
         sock = MagicMock()
 
-        def fake_original(self):
+        def fake_connect(self):
             self.sock = sock
 
-        with patch.object(m, "_original_http_connect", fake_original):
-            conn = http.client.HTTPConnection.__new__(http.client.HTTPConnection)
-            m._pin_read_timeout(conn)
+        with patch.object(http.client.HTTPSConnection, "connect", fake_connect):
+            conn = m._BoundedHTTPSConnection("example.invalid")
+            conn.connect()
 
-        assert sock.settimeout.called
         assert sock.settimeout.call_args.args == (m._REQUEST_TIMEOUT_SECONDS,)
 
-    def test_pin_read_timeout_is_idempotent_when_connect_failed(self):
-        """If the original connect raises, sock stays None; settimeout would raise too."""
+    def test_pin_is_safe_when_connect_left_no_socket(self):
         from immich_nodes import save_to_immich as m
 
-        def failing_original(self):
-            # stdlib connect() sets self.sock to a SocketType before raising
-            # on handshake failures, but we want the "no socket at all" path.
-            self.sock = None
+        m._pin_read_timeout(None)  # must not raise
 
-        with patch.object(m, "_original_http_connect", failing_original):
-            conn = http.client.HTTPConnection.__new__(http.client.HTTPConnection)
-            m._pin_read_timeout(conn)  # must not raise
-
-        assert conn.sock is None
-
-    def test_subclass_with_own_connect_is_routed_through_mro(self):
-        """Subclasses must not recurse into the patched base connect."""
+    def test_private_opener_uses_only_bounded_handlers(self):
         from immich_nodes import save_to_immich as m
 
-        called = {"n": 0}
+        kinds = {type(h) for h in m._OPENER.handlers}
+        assert m._BoundedHTTPHandler in kinds
+        assert m._BoundedHTTPSHandler in kinds
+        assert urllib.request.HTTPHandler not in kinds
+        assert urllib.request.HTTPSHandler not in kinds
+        assert dict(m._OPENER.addheaders)["User-Agent"].startswith("comfyui-immich/")
 
-        class _Pool(http.client.HTTPConnection):
-            def connect(self):  # installs own behaviour on the subclass
-                called["n"] += 1
-                self.sock = MagicMock()
+    def test_our_https_requests_still_do_tls(self):
+        from immich_nodes import save_to_immich as m
 
-        pool = _Pool.__new__(_Pool)
-        m._pin_read_timeout(pool)
-        assert called["n"] == 1
-        assert pool.sock.settimeout.called
-        assert pool.sock.settimeout.call_args.args == (m._REQUEST_TIMEOUT_SECONDS,)
+        def send(port):
+            m.urlopen(Request(f"https://127.0.0.1:{port}/"), timeout=3)
+
+        first = _first_bytes_from(send)
+        assert first[:1] == b"\x16", f"expected a TLS handshake, got {first!r}"
+
+    def test_our_http_requests_carry_user_agent(self):
+        from immich_nodes import save_to_immich as m
+
+        server = socket.socket()
+        server.bind(("127.0.0.1", 0))
+        server.listen(1)
+        port = server.getsockname()[1]
+        seen = {}
+
+        def serve():
+            conn, _ = server.accept()
+            seen["request"] = conn.recv(4096)
+            conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}")
+            conn.close()
+
+        thread = threading.Thread(target=serve, daemon=True)
+        thread.start()
+        with m.urlopen(Request(f"http://127.0.0.1:{port}/api"), timeout=3) as resp:
+            assert resp.read() == b"{}"
+        thread.join(timeout=5)
+        server.close()
+        assert b"User-Agent: comfyui-immich/" in seen["request"]
 
     def test_request_timeout_is_a_finite_positive_number(self):
         from immich_nodes import save_to_immich as m
