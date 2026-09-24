@@ -95,8 +95,29 @@ class _BoundedHTTPSHandler(urllib.request.HTTPSHandler):
         return self.do_open(_BoundedHTTPSConnection, req, **kwargs)
 
 
-# build_opener drops the default HTTP/HTTPS handlers when subclasses are given.
-_OPENER = urllib.request.build_opener(_BoundedHTTPHandler, _BoundedHTTPSHandler)
+class _RefuseRedirects(urllib.request.HTTPRedirectHandler):
+    """Never follow a redirect from Immich.
+
+    urllib's default handler copies ordinary headers, `x-api-key` included, to
+    the redirect target, even on another host. The Immich API has no reason to
+    redirect, so any redirect is refused before a second request is made.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise HTTPError(
+            req.full_url,
+            code,
+            "Immich answered with a redirect; refusing to follow it so the API key "
+            "is not sent anywhere else. Set IMMICH_URL to the final address "
+            "(for example https:// instead of http://).",
+            headers,
+            fp,
+        )
+
+
+# build_opener drops the default HTTP/HTTPS/redirect handlers when subclasses
+# are given.
+_OPENER = urllib.request.build_opener(_BoundedHTTPHandler, _BoundedHTTPSHandler, _RefuseRedirects)
 _OPENER.addheaders = [("User-Agent", _default_user_agent())]
 
 

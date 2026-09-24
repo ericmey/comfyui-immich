@@ -9,7 +9,7 @@ import sys
 import threading
 import urllib.request
 from unittest.mock import MagicMock, patch
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 from urllib.request import Request
 
 import numpy as np
@@ -1004,3 +1004,73 @@ class TestScopedTimeouts:
 
         assert m._REQUEST_TIMEOUT_SECONDS > 0
         assert m._REQUEST_TIMEOUT_SECONDS <= 120  # not absurdly long
+
+
+class TestRedirectsAreRefused:
+    """A redirect must never carry the API key to a second request."""
+
+    @staticmethod
+    def _server(handle):
+        server = socket.socket()
+        server.bind(("127.0.0.1", 0))
+        server.listen(2)
+        port = server.getsockname()[1]
+        log = []
+
+        def run():
+            server.settimeout(3)
+            with contextlib.suppress(OSError):
+                while True:
+                    conn, _ = server.accept()
+                    conn.settimeout(3)
+                    data = conn.recv(4096)
+                    log.append(data)
+                    conn.sendall(handle(data))
+                    conn.close()
+
+        threading.Thread(target=run, daemon=True).start()
+        return port, log, server
+
+    def _redirect_to(self, target_port, same_host_path=False):
+        location = f"http://127.0.0.1:{target_port}/" + ("moved" if same_host_path else "")
+        reply = (
+            f"HTTP/1.1 302 Found\r\nLocation: {location}\r\n"
+            "Content-Length: 0\r\nConnection: close\r\n\r\n"
+        ).encode()
+        return lambda _data: reply
+
+    def test_cross_host_redirect_sends_nothing_to_second_host(self):
+        from immich_nodes import save_to_immich as m
+
+        ok = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}"
+        other_port, other_log, other = self._server(lambda _d: ok)
+        first_port, _first_log, first = self._server(self._redirect_to(other_port))
+        req = Request(
+            f"http://127.0.0.1:{first_port}/api/assets", headers={"x-api-key": "SENTINEL-KEY-7f3a"}
+        )
+        with pytest.raises(HTTPError):
+            m.urlopen(req, timeout=3)
+        first.close()
+        other.close()
+        assert other_log == [], "the redirect target must receive no request at all"
+
+    def test_same_host_redirect_is_refused_too(self):
+        from immich_nodes import save_to_immich as m
+
+        port_holder = {}
+
+        def handle(data):
+            if b"GET /moved" in data:
+                return b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}"
+            return self._redirect_to(port_holder["p"], same_host_path=True)(data)
+
+        port, log, server = self._server(handle)
+        port_holder["p"] = port
+        with pytest.raises(HTTPError) as err:
+            m.urlopen(
+                Request(f"http://127.0.0.1:{port}/api", headers={"x-api-key": "k"}), timeout=3
+            )
+        server.close()
+        assert err.value.code == 302
+        assert "IMMICH_URL" in str(err.value.reason)
+        assert len(log) == 1, "no second request after the redirect"
