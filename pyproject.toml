@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "comfyui-immich"
-version = "0.2.14"
+version = "0.2.15"
 description = "ComfyUI custom nodes for Immich integration — upload, metadata, album management"
 readme = "README.md"
 license = "MIT"
