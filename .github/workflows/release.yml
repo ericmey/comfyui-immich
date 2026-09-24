@@ -103,24 +103,34 @@ jobs:
           generate_release_notes: true
 
   # Publish the release to the Comfy Registry, which is what ComfyUI Manager
-  # lists. A separate job on purpose: the publish action pip-installs comfy-cli
-  # unpinned, so it must not share a workspace holding the contents: write
-  # token. It checks out the new tag read-only (so the bumped version is the
-  # one published) and tells the action not to re-checkout, which would reset
-  # to the pre-bump commit and publish the previous version.
+  # lists. A separate, read-only job: it checks out the new tag (so the bumped
+  # version is the one published) and never holds the contents: write token.
+  #
+  # We call comfy-cli directly, pinned to an exact version, instead of
+  # Comfy-Org/publish-node-action: the action's pinned v1.0.1 ran
+  # `comfy --yes env`, which current comfy-cli rejects, and it pip-installed
+  # comfy-cli unpinned. Bump COMFY_CLI_VERSION deliberately and re-verify.
   registry:
     needs: release
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    env:
+      COMFY_CLI_VERSION: "1.21.0"
     steps:
       - uses: actions/checkout@v7
         with:
           ref: "v${{ needs.release.outputs.version }}"
           persist-credentials: false
 
-      - name: Publish to Comfy Registry
-        uses: Comfy-Org/publish-node-action@7578cdb0c1410f2515e6f9b1443c6859cab94f05  # v1.0.1
+      - uses: actions/setup-python@v7
         with:
-          personal_access_token: ${{ secrets.REGISTRY_ACCESS_TOKEN }}
-          skip_checkout: "true"
+          python-version: "3.12"
+
+      - name: Install comfy-cli
+        run: python -m pip install "comfy-cli==${COMFY_CLI_VERSION}"
+
+      - name: Publish to Comfy Registry
+        env:
+          REGISTRY_ACCESS_TOKEN: ${{ secrets.REGISTRY_ACCESS_TOKEN }}
+        run: comfy --skip-prompt --no-enable-telemetry node publish --token "$REGISTRY_ACCESS_TOKEN"
