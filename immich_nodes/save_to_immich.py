@@ -158,6 +158,53 @@ def _load_env(env_path):
     return env
 
 
+_USER_CONFIG_NAME = "comfyui-immich.env"
+
+
+def _config_paths():
+    """Return (user_dir_file_or_None, node_folder_env)."""
+    package_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    node_env = os.path.join(package_dir, ".env")
+    user_env = None
+    if folder_paths is not None and hasattr(folder_paths, "get_user_directory"):
+        with contextlib.suppress(Exception):
+            user_env = os.path.join(folder_paths.get_user_directory(), _USER_CONFIG_NAME)
+    return user_env, node_env
+
+
+def resolve_config():
+    """Resolve IMMICH_URL / IMMICH_API_KEY and report where each came from.
+
+    Precedence: environment, then ComfyUI's user directory
+    (`user/comfyui-immich.env`, which survives reinstalling the node), then
+    `.env` in the node folder. Sources are "env", "userdir", "dotenv" or "none".
+    """
+    user_env, node_env = _config_paths()
+    layers = [
+        ("env", os.environ),
+        ("userdir", _load_env(user_env) if user_env else {}),
+        ("dotenv", _load_env(node_env)),
+    ]
+
+    def pick(name):
+        for source, values in layers:
+            value = (values.get(name) or "").strip()
+            if value:
+                return value, source
+        return "", "none"
+
+    url, url_source = pick("IMMICH_URL")
+    key, key_source = pick("IMMICH_API_KEY")
+    return {
+        "url": _normalize_immich_url(url),
+        "key": key,
+        "url_source": url_source,
+        "key_source": key_source,
+        "user_env": user_env,
+        "node_env": node_env,
+    }
+
+
 def _normalize_immich_url(url):
     """Normalize Immich base URL values from .env or shell environment."""
     url = (url or "").strip().rstrip("/")
@@ -300,26 +347,22 @@ class SaveToImmich:
     CATEGORY = "image/immich"
 
     def _get_config(self):
-        """Load IMMICH_URL and IMMICH_API_KEY from .env in the package root."""
-        package_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        env_path = os.path.join(package_dir, ".env")
-        env = _load_env(env_path)
-
-        immich_url = os.environ.get("IMMICH_URL") or env.get("IMMICH_URL", "")
-        api_key = os.environ.get("IMMICH_API_KEY") or env.get("IMMICH_API_KEY", "")
-
-        if not immich_url:
+        """Return (IMMICH_URL, IMMICH_API_KEY); see resolve_config for precedence."""
+        config = resolve_config()
+        where = config["node_env"]
+        if config["user_env"]:
+            where = f"{config['user_env']} or {where}"
+        if not config["url"]:
             raise ValueError(
-                f"IMMICH_URL not set. Create a .env file at {env_path} "
+                f"IMMICH_URL not set. Create a .env file at {where} "
                 "with IMMICH_URL=https://your-immich-instance.com"
             )
-        if not api_key:
+        if not config["key"]:
             raise ValueError(
-                f"IMMICH_API_KEY not set. Create a .env file at {env_path} "
+                f"IMMICH_API_KEY not set. Create a .env file at {where} "
                 "with IMMICH_API_KEY=your-api-key-here"
             )
-
-        return _normalize_immich_url(immich_url), api_key.strip()
+        return config["url"], config["key"]
 
     def _api_request(self, url, method, headers, body=None):
         """Make an HTTP request and return parsed JSON response.

@@ -42,6 +42,33 @@ IMMICH_API_KEY=your-api-key-here
 
 The `.env` file is gitignored and persists across `git pull` updates.
 
+### Where the configuration can live
+
+The node reads `IMMICH_URL` and `IMMICH_API_KEY` from the first place that has
+them:
+
+1. **Environment variables** of the process running ComfyUI.
+2. **`ComfyUI/user/comfyui-immich.env`** (same format as `.env`). Recommended:
+   it lives outside the node folder, so it survives reinstalling or replacing
+   the node.
+3. **`.env` in this node's folder**, as above.
+
+### Settings and status
+
+Right-click the **Save to Immich** node:
+
+- **Immich: connection status** shows the server URL, whether an API key is
+  set (never the key itself), and which file or variable each came from.
+- **Immich: test connection** makes one request to the saved server with the
+  saved key and tells you whether it works (for example "key rejected" or
+  "server unreachable").
+
+The panel is **read-only on purpose**. ComfyUI has no login by default, so
+anything a node lets you change from the browser could be changed by anyone
+who can reach your ComfyUI, including pointing uploads at a different server.
+To change the settings, edit the file or environment variable and restart
+ComfyUI.
+
 ### Getting an Immich API Key
 
 1. Open your Immich instance in a browser
@@ -188,7 +215,8 @@ as environment variables instead.
 
 | Symptom | Likely cause |
 |---|---|
-| `IMMICH_URL not set` / `IMMICH_API_KEY not set` | No `.env` in this node's folder and no environment variable. Copy `.env.example` to `.env` and fill it in, then restart ComfyUI. |
+| `IMMICH_URL not set` / `IMMICH_API_KEY not set` | Nothing configured in any of the three places above. Create `ComfyUI/user/comfyui-immich.env` (or `.env` here), then restart ComfyUI. Right-click the node, then **Immich: connection status**, to see what it found. |
+| Upload fails with a redirect error | Immich (or a proxy) redirected the request. Set `IMMICH_URL` to the final address, for example `https://` instead of `http://`. |
 | Upload fails with HTTP 401 or 403 | The key is wrong, revoked, or missing a permission (see *Privacy and security*). |
 | Upload fails with a connection or timeout error | `IMMICH_URL` is unreachable from the machine running ComfyUI. Open it in a browser **on that machine**. The local preview is still saved. |
 | `album` receipt is `unconfirmed` | Immich returned success without a per-asset body, often because a proxy strips it. Check the album in Immich. |

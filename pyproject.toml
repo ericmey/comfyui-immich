@@ -58,7 +58,7 @@ warn_unused_configs = true
 disallow_untyped_defs = false
 
 [[tool.mypy.overrides]]
-module = ["PIL.*", "folder_paths"]  # folder_paths is injected by ComfyUI at runtime
+module = ["PIL.*", "folder_paths", "server", "aiohttp", "aiohttp.*"]  # injected/provided by ComfyUI at runtime
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
