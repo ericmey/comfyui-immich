@@ -19,6 +19,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    outputs:
+      version: ${{ steps.version.outputs.new }}
     # This reads the HEAD commit of the push, which for a PR merge is the merge
     # or squash subject, not the branch commits. A default merge commit reads
     # "Merge pull request #N from ..." and matches no conventional prefix, so it
@@ -99,3 +101,26 @@ jobs:
           tag_name: "v${{ steps.version.outputs.new }}"
           name: "v${{ steps.version.outputs.new }}"
           generate_release_notes: true
+
+  # Publish the release to the Comfy Registry, which is what ComfyUI Manager
+  # lists. A separate job on purpose: the publish action pip-installs comfy-cli
+  # unpinned, so it must not share a workspace holding the contents: write
+  # token. It checks out the new tag read-only (so the bumped version is the
+  # one published) and tells the action not to re-checkout, which would reset
+  # to the pre-bump commit and publish the previous version.
+  registry:
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: "v${{ needs.release.outputs.version }}"
+          persist-credentials: false
+
+      - name: Publish to Comfy Registry
+        uses: Comfy-Org/publish-node-action@7578cdb0c1410f2515e6f9b1443c6859cab94f05  # v1.0.1
+        with:
+          personal_access_token: ${{ secrets.REGISTRY_ACCESS_TOKEN }}
+          skip_checkout: "true"

@@ -1,0 +1,4 @@
+# Files kept out of the Comfy Registry package (layers on top of .gitignore).
+tests/
+.github/
+.claude/
