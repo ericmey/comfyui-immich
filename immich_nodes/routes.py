@@ -21,8 +21,11 @@ def register():
 
     @routes.post("/immich/test")
     async def _test(request):
-        body = await request.read()
-        has_input = bool(request.query_string) or bool(body)
+        # Never buffer a caller's body: a declared length is refused unread, and
+        # a chunked or unknown-length body is refused after at most one byte.
+        has_input = bool(request.query_string) or (request.content_length or 0) > 0
+        if not has_input and request.content_length is None:
+            has_input = bool(await request.content.read(1))
         code, payload = await asyncio.to_thread(run_connection_test, has_input)
         return web.json_response(payload, status=code)
 

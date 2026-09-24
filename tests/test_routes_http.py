@@ -82,3 +82,44 @@ def test_status_and_test_routes_over_http():
     assert out["plain"] == (200, {"ok": True, "status": 200, "error": None})
     assert mock_open.call_count == 1  # only the input-free call reached the network
     assert mock_open.call_args.args[0].full_url == "https://immich.example.test/api/users/me"
+
+
+def _raw_post(base, head, body_part):
+    """Send raw request bytes and return the first response line, or a timeout marker."""
+    import socket as _socket
+
+    host, port = base.removeprefix("http://").split(":")
+    with _socket.create_connection((host, int(port)), timeout=3) as sock:
+        sock.sendall(head + body_part)
+        try:
+            return sock.recv(64).split(b"\r\n")[0]
+        except TimeoutError:
+            return b"TIMEOUT (server waited for the body)"
+
+
+def test_declared_body_is_refused_without_reading_it():
+    head = (
+        b"POST /immich/test HTTP/1.1\r\nHost: x\r\n"
+        b"Content-Type: application/octet-stream\r\nContent-Length: 100000000\r\n\r\n"
+    )
+
+    async def calls(base):
+        return await asyncio.to_thread(_raw_post, base, head, b"only-a-few-bytes")
+
+    with patch("immich_nodes.save_to_immich.urlopen") as mock_open:
+        first_line = _serve_and_call(calls)
+    assert first_line.startswith(b"HTTP/1.1 400"), first_line
+    mock_open.assert_not_called()
+
+
+def test_chunked_body_is_refused_after_one_byte():
+    head = b"POST /immich/test HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n"
+
+    async def calls(base):
+        # One chunk, and the terminating zero-chunk is never sent.
+        return await asyncio.to_thread(_raw_post, base, head, b"5\r\nhello\r\n")
+
+    with patch("immich_nodes.save_to_immich.urlopen") as mock_open:
+        first_line = _serve_and_call(calls)
+    assert first_line.startswith(b"HTTP/1.1 400"), first_line
+    mock_open.assert_not_called()
