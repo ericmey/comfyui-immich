@@ -24,6 +24,8 @@ jobs:
   # comfy-cli unpinned. Bump COMFY_CLI_VERSION deliberately and re-verify.
   registry:
     needs: ci
+    # A pre-release is for trying a build, never for Manager users.
+    if: ${{ !github.event.release.prerelease }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
