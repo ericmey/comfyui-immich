@@ -674,6 +674,31 @@ def test_one_bad_image_keeps_the_rest_of_the_batch_and_its_receipts(image_batch_
     assert len(result["ui"]["images"]) == 2
 
 
+def test_settle_timeout_does_not_disable_checks_for_later_assets(image_batch_of_two):
+    """A timeout belongs to one asset; later assets still need the sidecar guard."""
+    node = SaveToImmich()
+    settle_requests = []
+
+    def archive(image, filename, **kwargs):
+        settle_requests.append(kwargs["wait_for_settle"])
+        return (
+            {
+                "filename": filename,
+                "upload": "ok",
+                "description": "ok",
+                "album": "not_requested",
+                "storage_settled": len(settle_requests) != 1,
+                "errors": [],
+            },
+            None,
+        )
+
+    with patch.object(node, "_archive_image", side_effect=archive):
+        node.upload(image_batch_of_two, description="caption")
+
+    assert settle_requests == [True, True]
+
+
 def test_rejected_filename_prefix_still_archives_to_immich(image_batch):
     """Preview delivery and archiving fail independently, in both directions."""
     node = SaveToImmich()
