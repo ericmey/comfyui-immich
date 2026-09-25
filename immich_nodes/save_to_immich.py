@@ -730,7 +730,6 @@ class SaveToImmich:
             description = self._build_auto_description(prompt, character=character)
         results = []
         reports = []
-        settle_enabled = True
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         for i in range(images.shape[0]):
             filename = f"{filename_prefix}_{timestamp}_{i:04d}_{uuid.uuid4().hex[:8]}.png"
@@ -754,7 +753,7 @@ class SaveToImmich:
                     extra_pnginfo=extra_pnginfo,
                     description=description,
                     album_id=album_id,
-                    wait_for_settle=settle_enabled,
+                    wait_for_settle=True,
                 )
             except Exception as exc:
                 report = _new_archive_report(Path(filename).name, description, album_id)
@@ -763,8 +762,6 @@ class SaveToImmich:
                 )
                 preview = None
 
-            if report.get("storage_settled") is False:
-                settle_enabled = False
             if preview is not None:
                 results.append(preview)
             reports.append(report)
