@@ -27,9 +27,10 @@ except ImportError:
 # `urlopen(timeout=)` sets the socket timeout at connect, and every later read
 # on that socket (plain or TLS, fixed-length or chunked) inherits it, so a
 # server that stalls mid-body raises TimeoutError instead of hanging the node.
-# tests/test_save_to_immich.py::TestScopedTimeouts proves it; an earlier
-# version re-pinned the timeout in custom HTTP(S)Connection subclasses, which
-# measured to be redundant on CPython 3.10, 3.13 and 3.14.
+# The suite checks this over plain HTTP (TestScopedTimeouts, fixed-length and
+# chunked); the TLS cases were measured by hand on CPython 3.10, 3.13 and 3.14
+# when custom HTTP(S)Connection subclasses that re-pinned the timeout were
+# removed as redundant (PR #16).
 #
 # Nothing here modifies http.client or urllib for the rest of the process. An
 # earlier version patched HTTPConnection.connect and HTTPSConnection.connect
