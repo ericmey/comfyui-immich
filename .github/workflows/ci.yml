@@ -3,9 +3,9 @@ name: CI
 on:
   pull_request:
     branches: [main]
-  # Pushes to main reach this workflow through release.yml, which calls it as a
-  # gate before cutting a release. Triggering on push here too would run every
-  # check twice for the same commit.
+  push:
+    branches: [main]
+  # release.yml also calls this as the gate before publishing a release.
   workflow_call:
 
 permissions:
@@ -16,9 +16,9 @@ jobs:
     name: Lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: "3.13"
           cache: pip
@@ -46,9 +46,9 @@ jobs:
       matrix:
         python-version: ["3.10", "3.11", "3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
