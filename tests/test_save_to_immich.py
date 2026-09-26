@@ -7,6 +7,7 @@ import json
 import socket
 import sys
 import threading
+import time
 import urllib.request
 from unittest.mock import MagicMock, patch
 from urllib.error import HTTPError, URLError
@@ -963,34 +964,58 @@ class TestNoProcessWideSideEffects:
 class TestScopedTimeouts:
     """Immich calls go through this module's own bounded connections only."""
 
-    def test_bounded_https_pins_timeout_after_connect(self):
-        from immich_nodes import save_to_immich as m
-
-        sock = MagicMock()
-
-        def fake_connect(self):
-            self.sock = sock
-
-        with patch.object(http.client.HTTPSConnection, "connect", fake_connect):
-            conn = m._BoundedHTTPSConnection("example.invalid")
-            conn.connect()
-
-        assert sock.settimeout.call_args.args == (m._REQUEST_TIMEOUT_SECONDS,)
-
-    def test_pin_is_safe_when_connect_left_no_socket(self):
-        from immich_nodes import save_to_immich as m
-
-        m._pin_read_timeout(None)  # must not raise
-
-    def test_private_opener_uses_only_bounded_handlers(self):
+    def test_private_opener_refuses_redirects_and_keeps_stdlib_transport(self):
         from immich_nodes import save_to_immich as m
 
         kinds = {type(h) for h in m._OPENER.handlers}
-        assert m._BoundedHTTPHandler in kinds
-        assert m._BoundedHTTPSHandler in kinds
-        assert urllib.request.HTTPHandler not in kinds
-        assert urllib.request.HTTPSHandler not in kinds
+        assert m._RefuseRedirects in kinds
+        assert urllib.request.HTTPRedirectHandler not in kinds
+        # Plain stdlib transport: TLS and certificate checks are Python's own.
+        assert urllib.request.HTTPHandler in kinds
+        assert urllib.request.HTTPSHandler in kinds
         assert dict(m._OPENER.addheaders)["User-Agent"].startswith("comfyui-immich/")
+
+    @pytest.mark.parametrize("chunked", [False, True], ids=["content-length", "chunked"])
+    def test_a_server_that_stalls_mid_body_times_out(self, chunked):
+        """The timeout passed to urlopen bounds reads, not only connect.
+
+        The server sends headers and part of the body, then goes silent. Before
+        this test, custom connection classes re-pinned the timeout to guard
+        exactly this case; plain urllib already raises, so they were removed.
+        """
+        from immich_nodes import save_to_immich as m
+
+        server = socket.socket()
+        server.bind(("127.0.0.1", 0))
+        server.listen(1)
+        port = server.getsockname()[1]
+        release = threading.Event()
+
+        def serve():
+            conn, _ = server.accept()
+            conn.recv(65536)
+            framing = (
+                b"Transfer-Encoding: chunked\r\n\r\n3e8\r\n"
+                if chunked
+                else b"Content-Length: 100000\r\n\r\n"
+            )
+            conn.sendall(b"HTTP/1.1 200 OK\r\n" + framing + b"x" * 1000)
+            release.wait(10)
+            conn.close()
+            server.close()
+
+        threading.Thread(target=serve, daemon=True).start()
+        started = time.monotonic()
+        try:
+            with (
+                pytest.raises(TimeoutError),
+                m.urlopen(Request(f"http://127.0.0.1:{port}/"), timeout=0.5) as resp,
+            ):
+                resp.read(100)
+                resp.read()
+        finally:
+            release.set()
+        assert time.monotonic() - started < 5
 
     def test_our_https_requests_still_do_tls(self):
         from immich_nodes import save_to_immich as m

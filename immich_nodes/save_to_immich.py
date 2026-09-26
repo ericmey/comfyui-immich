@@ -1,7 +1,6 @@
 """ComfyUI output node that uploads generated images to Immich with full metadata."""
 
 import contextlib
-import http.client
 import io
 import json
 import os
@@ -25,11 +24,13 @@ except ImportError:
 
 # Every Immich call is bounded, and only Immich calls are.
 #
-# `urlopen(timeout=)` bounds the connect phase, and on CPython 3.10+ the socket
-# it returns carries that timeout for reads too. But a `socket.makefile()`-
-# wrapped response does not always honour it on partial-body reads, so this
-# module's own connection classes re-pin the timeout after connect. They are
-# reached only through the private opener below.
+# `urlopen(timeout=)` sets the socket timeout at connect, and every later read
+# on that socket (plain or TLS, fixed-length or chunked) inherits it, so a
+# server that stalls mid-body raises TimeoutError instead of hanging the node.
+# The suite checks this over plain HTTP (TestScopedTimeouts, fixed-length and
+# chunked); the TLS cases were measured by hand on CPython 3.10, 3.13 and 3.14
+# when custom HTTP(S)Connection subclasses that re-pinned the timeout were
+# removed as redundant (PR #16).
 #
 # Nothing here modifies http.client or urllib for the rest of the process. An
 # earlier version patched HTTPConnection.connect and HTTPSConnection.connect
@@ -61,40 +62,6 @@ def _default_user_agent():
         return "comfyui-immich/unknown"
 
 
-def _pin_read_timeout(sock):
-    """Re-pin the read timeout on a freshly connected socket (None-safe)."""
-    if sock is not None:
-        with contextlib.suppress(OSError):
-            sock.settimeout(_REQUEST_TIMEOUT_SECONDS)
-
-
-class _BoundedHTTPConnection(http.client.HTTPConnection):
-    def connect(self):
-        super().connect()
-        _pin_read_timeout(self.sock)
-
-
-class _BoundedHTTPSConnection(http.client.HTTPSConnection):
-    def connect(self):
-        super().connect()  # TLS handshake happens here, as in the stdlib
-        _pin_read_timeout(self.sock)
-
-
-class _BoundedHTTPHandler(urllib.request.HTTPHandler):
-    def http_open(self, req):
-        return self.do_open(_BoundedHTTPConnection, req)
-
-
-class _BoundedHTTPSHandler(urllib.request.HTTPSHandler):
-    def https_open(self, req):
-        # Mirror the stdlib's https_open. CPython 3.10/3.11 also pass
-        # check_hostname; 3.12+ folded it into the context and dropped it.
-        kwargs = {"context": self._context}
-        if hasattr(self, "_check_hostname"):
-            kwargs["check_hostname"] = self._check_hostname
-        return self.do_open(_BoundedHTTPSConnection, req, **kwargs)
-
-
 class _RefuseRedirects(urllib.request.HTTPRedirectHandler):
     """Never follow a redirect from Immich.
 
@@ -115,9 +82,9 @@ class _RefuseRedirects(urllib.request.HTTPRedirectHandler):
         )
 
 
-# build_opener drops the default HTTP/HTTPS/redirect handlers when subclasses
-# are given.
-_OPENER = urllib.request.build_opener(_BoundedHTTPHandler, _BoundedHTTPSHandler, _RefuseRedirects)
+# build_opener replaces the default redirect handler with this subclass and keeps
+# the stdlib HTTP/HTTPS handlers (TLS and certificate checks unchanged).
+_OPENER = urllib.request.build_opener(_RefuseRedirects)
 _OPENER.addheaders = [("User-Agent", _default_user_agent())]
 
 
@@ -367,8 +334,8 @@ class SaveToImmich:
     def _api_request(self, url, method, headers, body=None):
         """Make an HTTP request and return parsed JSON response.
 
-        `timeout=` bounds the connect phase; the read side is re-pinned by this
-        module's own connection classes (see `_BoundedHTTPSConnection`).
+        `timeout=` bounds the connect and every read on the socket, so a stalled
+        Immich raises TimeoutError instead of hanging the node.
         """
         req = Request(url, data=body, headers=headers, method=method)
         with urlopen(req, timeout=_REQUEST_TIMEOUT_SECONDS) as resp:
