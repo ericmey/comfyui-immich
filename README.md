@@ -23,7 +23,7 @@ Custom nodes for [ComfyUI](https://github.com/comfyanonymous/ComfyUI) that integ
 
 ```bash
 cd /path/to/ComfyUI/custom_nodes
-git clone https://github.com/ericmey/comfyui-immich.git
+git clone https://github.com/sourceblender/comfyui-immich.git
 ```
 
 The node appears under **image/immich** in the node menu. It needs no packages beyond what ComfyUI already ships.
