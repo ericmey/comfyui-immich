@@ -39,8 +39,8 @@ eight-check run against the private ComfyUI host's installed `a2cd0ec` build
 ComfyUI history reported one uploaded asset and successful description, and
 the downloaded preview matched Immich's original PNG byte-for-byte. The
 embedded graph, dimensions, asset ID, and description matched the submission.
-This establishes the proof path on **v0.3.0**; it does not test the changes
-waiting in PRs #16 and #17.
+This establishes the proof path on **v0.3.0**; it does not test the released
+v0.5.0 build.
 
 ## Failure and recovery
 
@@ -66,8 +66,15 @@ passes six checks against the real Immich service, using the checkout at
 `b22de49` (v0.4.2). The recovered asset ID differed from the earlier archive
 proof asset. This exercises the local retry module, **not** a deployed ComfyUI
 node, and the initial failure is induced. It does not establish reliability
-under a real outage or the changes waiting in PRs #16/#17.
+under a real outage or the later v0.5.0 source.
+
+[`results/recovery-v0.5.0-source.json`](results/recovery-v0.5.0-source.json)
+repeats the six-check recovery proof using the v0.5.0 source at `9d17e03`.
+Its retry returned a distinct real Immich asset with byte-equal original PNG
+and the expected description. It still exercises a **source checkout**, so it
+cannot establish what the installed v0.5.0 node does in ComfyUI.
 
 **Boundary:** the runner executes the deployed ComfyUI node. A source checkout
-or green unit test does not prove those bytes are deployed. A separate
-post-PR archive run and the new Settings panel still need their own receipts.
+or green unit test does not prove those bytes are deployed. The v0.5.0 archive
+run awaits a host installation; Eric's Settings and Manager experience still
+needs his hands-on test.
