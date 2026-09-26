@@ -33,6 +33,8 @@ dev = [
     "pytest>=7.0",
     "ruff>=0.4",
     "mypy>=1.8",
+    # Provided by ComfyUI at runtime; here so the real HTTP route tests run in CI.
+    "aiohttp>=3.9",
 ]
 
 [tool.setuptools]

@@ -316,18 +316,15 @@ class SaveToImmich:
     def _get_config(self):
         """Return (IMMICH_URL, IMMICH_API_KEY); see resolve_config for precedence."""
         config = resolve_config()
-        where = config["node_env"]
-        if config["user_env"]:
-            where = f"{config['user_env']} or {where}"
         if not config["url"]:
             raise ValueError(
-                f"IMMICH_URL not set. Create a .env file at {where} "
-                "with IMMICH_URL=https://your-immich-instance.com"
+                "IMMICH_URL not set. Open Settings → Immich in ComfyUI and save your "
+                "Immich URL and API key (or set the IMMICH_URL environment variable)."
             )
         if not config["key"]:
             raise ValueError(
-                f"IMMICH_API_KEY not set. Create a .env file at {where} "
-                "with IMMICH_API_KEY=your-api-key-here"
+                "IMMICH_API_KEY not set. Open Settings → Immich in ComfyUI and save "
+                "your API key (or set the IMMICH_API_KEY environment variable)."
             )
         return config["url"], config["key"]
 

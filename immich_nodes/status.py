@@ -1,6 +1,7 @@
-"""Read-only connection status for the settings panel (status contract v1).
+"""Connection status and test for the settings panel.
 
-Two operations, both deliberately incapable of changing configuration:
+Two operations, both deliberately incapable of changing configuration (saving
+lives in settings.py, behind its own same-origin and confirmation rules):
 
 * status_payload(): what is configured and where it came from. Never returns
   the API key or anything derived from it.
@@ -10,7 +11,8 @@ Two operations, both deliberately incapable of changing configuration:
   remote body.
 
 ComfyUI has no authentication by default, so anything reachable here is
-reachable by anyone who can reach ComfyUI. That is why there is no write path.
+reachable by anyone who can reach ComfyUI. The status never reports absolute
+paths, which would name the machine's user.
 """
 
 import threading
@@ -27,13 +29,20 @@ _test_lock = threading.Lock()
 
 
 def status_payload():
+    from . import settings
+
     config = _node.resolve_config()
     return {
         "url": config["url"] or None,
         "key_set": bool(config["key"]),
         "source": {"url": config["url_source"], "key": config["key_source"]},
-        "config_path": config["node_env"],
-        "user_config_path": config["user_env"],
+        # A value from the process environment wins over the panel; say so.
+        "shadowed": {
+            "url": settings.shadowed_by_environment("IMMICH_URL"),
+            "key": settings.shadowed_by_environment("IMMICH_API_KEY"),
+        },
+        "writable": config["user_env"] is not None,
+        "config_location": settings.config_location(),
     }
 
 

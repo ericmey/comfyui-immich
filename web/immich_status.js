@@ -1,17 +1,17 @@
-// Read-only Immich connection status for the "Save to Immich" node.
-// Right-click the node: "Immich: connection status" or "Immich: test connection".
-// Nothing here can change configuration; see README "Settings and status".
+// Quick Immich status from the "Save to Immich" node's right-click menu:
+// "Immich: connection status" or "Immich: test connection". Nothing here changes
+// configuration; edit it in Settings -> Immich (immich_settings.js).
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 
 const MESSAGES = {
-  unauthorized: "Immich rejected the API key (401). Check IMMICH_API_KEY.",
+  unauthorized: "Immich rejected the API key (401). Check it in Settings → Immich.",
   forbidden: "The key was accepted but is restricted (403). Uploads may still work if it can upload, read, update and add to albums.",
-  unreachable: "Could not reach IMMICH_URL from the ComfyUI machine.",
+  unreachable: "Could not reach the Immich URL from the ComfyUI machine.",
   timeout: "Immich did not answer in time.",
-  redirect_refused: "Immich answered with a redirect. Set IMMICH_URL to the final address (for example https://).",
+  redirect_refused: "Immich answered with a redirect. Save the final address (for example https://) in Settings → Immich.",
   bad_response: "Immich answered, but not as expected.",
-  not_configured: "IMMICH_URL or IMMICH_API_KEY is not set.",
+  not_configured: "Set the Immich URL and API key in Settings → Immich.",
   rate_limited: "Please wait a few seconds before testing again.",
 };
 
@@ -25,13 +25,10 @@ function notify(severity, summary, detail) {
 }
 
 function describe(status) {
-  const where = status.user_config_path
-    ? `${status.user_config_path} (or ${status.config_path})`
-    : status.config_path;
   return [
     `Server: ${status.url ?? "not set"} (from ${status.source.url})`,
     `API key: ${status.key_set ? "set" : "not set"} (from ${status.source.key})`,
-    `Config file: ${where}`,
+    `Saved in: ${status.config_location}. Change it in Settings → Immich.`,
   ].join("\n");
 }
 
