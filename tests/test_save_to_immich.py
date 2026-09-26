@@ -135,7 +135,8 @@ class TestSaveToImmich:
         ):
             node._get_config()
 
-    def test_get_config_allows_environment_override(self, tmp_path):
+    def test_get_config_ignores_the_environment(self, tmp_path):
+        # 0.6.0: settings come from Settings -> Immich (user file) or the legacy node .env.
         node = SaveToImmich()
         env_file = tmp_path / ".env"
         env_file.write_text("IMMICH_URL=https://from-file.test\nIMMICH_API_KEY=file-key\n")
@@ -144,13 +145,10 @@ class TestSaveToImmich:
             patch("immich_nodes.save_to_immich.os.path.dirname", return_value=str(tmp_path)),
             patch.dict(
                 "immich_nodes.save_to_immich.os.environ",
-                {
-                    "IMMICH_URL": "https://from-env.test/api/",
-                    "IMMICH_API_KEY": " env-key ",
-                },
+                {"IMMICH_URL": "https://from-env.test/api/", "IMMICH_API_KEY": " env-key "},
             ),
         ):
-            assert node._get_config() == ("https://from-env.test", "env-key")
+            assert node._get_config() == ("https://from-file.test", "file-key")
 
     @patch("immich_nodes.save_to_immich.urlopen")
     def test_api_request_allows_empty_json_response(self, mock_urlopen):

@@ -91,14 +91,17 @@ def test_requests_a_malicious_page_could_send_are_refused(paths, kw, code, error
         # TLS reverse proxy: the browser sees https, ComfyUI sees plain http.
         (
             {"origin": "https://comfy.example", "host": "comfy.example"},
-            {"IMMICH_ALLOWED_ORIGINS": "https://comfy.example"},
+            {"IMMICH_ALLOWED_ORIGINS": "https://comfy.example"},  # set by hand in the user file
         ),
     ],
     ids=["default http port", "default https port", "ipv6", "allowed proxy origin"],
 )
 def test_same_origin_accepts_the_page_itself(paths, kw, env):
-    with patch.dict(os.environ, env):
-        code, _ = save({"api_key": SENTINEL}, **kw)
+    user_env, _ = paths
+    if env:
+        user_env.parent.mkdir(parents=True, exist_ok=True)
+        user_env.write_text("".join(f"{k}={v}\n" for k, v in env.items()))
+    code, _ = save({"api_key": SENTINEL}, **kw)
     assert code == 200
 
 
@@ -139,37 +142,46 @@ def test_clear_key(paths):
     assert code == 200 and body["key_set"] is False
 
 
-@pytest.mark.parametrize("where", ["env", "dotenv"])
 @pytest.mark.parametrize("new_key", [None, "replacement"], ids=["no new key", "with new key"])
-def test_url_change_refused_when_the_key_lives_outside_the_panel(paths, where, new_key):
-    # Deleting the panel's copy would leave that key in force, and it would be
-    # sent to the new server; a key saved here cannot outrank the environment.
+def test_url_change_refused_when_the_key_lives_in_the_legacy_node_dotenv(paths, new_key):
+    # Deleting the panel's copy would leave the node .env key in force, and it
+    # would be sent to the new server.
     _, node_env = paths
     settings.write_user_settings({"IMMICH_URL": "https://good.example"})
-    env = {"IMMICH_API_KEY": "OLD-KEY"} if where == "env" else {}
-    if where == "dotenv":
-        node_env.write_text("IMMICH_API_KEY=OLD-KEY\n")
+    node_env.write_text("IMMICH_API_KEY=OLD-KEY\n")
     body = {"url": "https://new.example", "confirm_url_change": True}
     if new_key:
         body["api_key"] = new_key
-    with patch.dict(os.environ, env):
-        assert settings.plan_settings_update(body) == ({}, "key_outside_panel")
-        code, got = save(body)
-        assert (code, got["error"]) == (409, "key_outside_panel")
-        assert node_mod.resolve_config()["url"] == "https://good.example"
+    assert settings.plan_settings_update(body) == ({}, "key_outside_panel")
+    code, got = save(body)
+    assert (code, got["error"]) == (409, "key_outside_panel")
+    assert node_mod.resolve_config()["url"] == "https://good.example"
 
 
-@pytest.mark.parametrize("where", ["env", "dotenv"])
-def test_clear_key_refused_when_the_key_lives_outside_the_panel(paths, where):
+def test_an_environment_key_neither_blocks_nor_follows_a_url_change(paths):
+    settings.write_user_settings(
+        {"IMMICH_URL": "https://good.example", "IMMICH_API_KEY": "PANEL-KEY"}
+    )
+    with patch.dict(os.environ, {"IMMICH_API_KEY": "ENV-KEY", "IMMICH_URL": "https://env.example"}):
+        code, got = save({"url": "https://new.example", "confirm_url_change": True})
+        assert code == 200 and got["url"] == "https://new.example" and got["key_set"] is False
+        assert node_mod.resolve_config()["key"] == ""
+
+
+def test_clear_key_refused_when_the_key_lives_in_the_legacy_node_dotenv(paths):
     user_env, node_env = paths
     settings.write_user_settings({"IMMICH_API_KEY": "PANEL-KEY"})
-    env = {"IMMICH_API_KEY": "ENV-KEY"} if where == "env" else {}
-    if where == "dotenv":
-        node_env.write_text("IMMICH_API_KEY=ENV-KEY\n")
-    with patch.dict(os.environ, env):
-        code, got = save({"clear_api_key": True})
+    node_env.write_text("IMMICH_API_KEY=NODE-KEY\n")
+    code, got = save({"clear_api_key": True})
     assert (code, got["error"]) == (409, "key_outside_panel")
     assert saved(user_env)["IMMICH_API_KEY"] == "PANEL-KEY"
+
+
+def test_clear_key_ignores_an_environment_key(paths):
+    settings.write_user_settings({"IMMICH_API_KEY": "PANEL-KEY"})
+    with patch.dict(os.environ, {"IMMICH_API_KEY": "ENV-KEY"}):
+        code, got = save({"clear_api_key": True})
+    assert code == 200 and got["key_set"] is False
 
 
 @pytest.mark.parametrize(
@@ -191,10 +203,13 @@ def test_invalid_input_is_refused_and_nothing_is_written(paths, body, error):
     assert not user_env.exists()
 
 
-def test_status_reports_environment_overrides(paths):
-    with patch.dict(os.environ, {"IMMICH_URL": "https://env.example"}):
+def test_environment_variables_no_longer_override_the_panel(paths):
+    save({"url": "https://panel.example", "confirm_url_change": True, "api_key": SENTINEL})
+    with patch.dict(os.environ, {"IMMICH_URL": "https://env.example", "IMMICH_API_KEY": "env"}):
         payload = status.status_payload()
-    assert payload["shadowed"] == {"url": True, "key": False}
+    assert payload["url"] == "https://panel.example"
+    assert payload["source"] == {"url": "userdir", "key": "userdir"}
+    assert "shadowed" not in payload
 
 
 def test_status_never_reports_an_absolute_path(paths, tmp_path):
@@ -218,11 +233,11 @@ def test_no_user_directory_means_no_save(tmp_path):
     assert (code, body["error"]) == (503, "no_user_directory")
 
 
-def test_url_edit_refused_when_the_environment_sets_the_url(paths):
-    """Found by Aoi: the save returned 200, changed nothing, and dropped the key."""
+def test_url_edit_applies_even_when_the_environment_sets_a_url(paths):
+    """Before 0.6.0 this was refused as url_shadowed; the environment is no longer read."""
     user_env, _ = paths
     settings.write_user_settings({"IMMICH_API_KEY": "PANEL-KEY"})
     with patch.dict(os.environ, {"IMMICH_URL": "https://env.example"}):
         code, got = save({"url": "https://panel.example", "confirm_url_change": True})
-    assert (code, got["error"]) == (409, "url_shadowed")
-    assert saved(user_env) == {"IMMICH_API_KEY": "PANEL-KEY"}
+    assert code == 200 and got["url"] == "https://panel.example"
+    assert saved(user_env)["IMMICH_URL"] == "https://panel.example"

@@ -42,22 +42,10 @@ Click **Save**, then **Test connection**, which checks only the saved settings. 
 
 > **Anyone who can use your ComfyUI page can change these settings.** ComfyUI has no login by default, so keep it private. The key is never sent back to the browser.
 
-- **Behind an HTTPS reverse proxy?** The panel only accepts saves from ComfyUI's own origin. Set `IMMICH_ALLOWED_ORIGINS` (comma-separated, exact origins such as `https://comfy.example.com`) in the environment or a `.env` file; otherwise saving is refused with `cross_origin`.
-- **URL set by an environment variable?** The panel says so and refuses to change it (`url_shadowed`), because the variable would win anyway. Change it where it is set.
-- **Key set in the environment or the node folder's `.env`?** The panel won't change the URL or clear the key (`key_outside_panel`), so a key can never follow a new URL behind your back. Change both where the key lives.
+- **Behind an HTTPS reverse proxy?** The panel only accepts saves from ComfyUI's own origin. Add a line to `<ComfyUI user directory>/comfyui-immich.env` by hand, for example `IMMICH_ALLOWED_ORIGINS=https://comfy.example.com` (comma-separated, exact origins). Otherwise saving is refused with `cross_origin`. The panel never writes this setting.
+- **Upgrading from a node-folder `.env`?** An older `.env` in this node's folder is still read as a deprecated fallback. Save the URL and key in the panel to move them over. While the key still lives in that file, the panel won't change the URL or clear the key (`key_outside_panel`), so a key can never follow a new URL behind your back. Remove the key from the old file first.
 
-**Alternative: environment variables or a `.env` file.** These still work. `IMMICH_URL` and `IMMICH_API_KEY` are read from the first place that has them:
-
-1. **Environment variables** of the process running ComfyUI (these override the panel).
-2. **`<ComfyUI user directory>/comfyui-immich.env`**: what the panel writes.
-3. **`.env` in this node's folder**: copy `.env.example` to `.env`:
-
-```env
-IMMICH_URL=https://your-immich-instance.com
-IMMICH_API_KEY=your-api-key-here
-```
-
-The node folder's `.env` is gitignored, but a reinstall that replaces the folder (for example through ComfyUI-Manager) does **not** keep it. Prefer the panel or environment variables.
+**Environment variables are not read** (since 0.6.0). `IMMICH_URL` and `IMMICH_API_KEY` in ComfyUI's environment are ignored, and the panel is the one place the node is configured. Precedence: `<ComfyUI user directory>/comfyui-immich.env` (what the panel writes), then the node folder's legacy `.env`.
 
 ### Status from the node
 
@@ -196,7 +184,7 @@ Update from ComfyUI-Manager, or with `comfy node update comfyui-immich`, or `git
   Anyone who can download the original from Immich (for example through a
   shared album or link) can read your prompts and reload your graph.
 - **The API key is never stored in a workflow.** It lives in the settings
-  file, an environment variable or `.env`, never in a node input, so it does
+  file (or a legacy node-folder `.env`), never in a node input, so it does
   not end up in saved workflows or in PNG metadata. The settings panel never
   sends it back to the browser.
 - **Your key does not follow a redirect.** The node refuses any redirect from
@@ -206,7 +194,7 @@ Update from ComfyUI-Manager, or with `comfy node update comfyui-immich`, or `git
   on its own. If your Immich version lets you restrict a key, it needs to
   upload assets, read and update them (for the description), and add them to
   albums.
-- **Network scope.** The node sends requests only to your `IMMICH_URL`
+- **Network scope.** The node sends requests only to your saved Immich URL
   (through your system proxy, if `HTTP(S)_PROXY` is set), and its timeouts
   apply only to its own requests. It does not change networking
   for other nodes.
@@ -223,7 +211,7 @@ Update from ComfyUI-Manager, or with `comfy node update comfyui-immich`, or `git
 |---|---|
 | `IMMICH_URL not set` / `IMMICH_API_KEY not set` | Nothing is configured. Open **Settings → Immich**, save the URL and key, and click **Test connection**. |
 | Saving in Settings says `cross_origin` | You reach ComfyUI through a reverse proxy. Set `IMMICH_ALLOWED_ORIGINS` (see *Configure*). |
-| Saving in Settings says `url_shadowed` or `key_outside_panel` | The URL or key is set by an environment variable or the node folder's `.env`. Change it there. |
+| Saving in Settings says `key_outside_panel` | The key is still in the node folder's legacy `.env`. Remove it there, then save the URL and key in the panel. |
 | Upload fails with a redirect error | Immich (or a proxy) redirected the request. Save the final address as the URL, for example `https://` instead of `http://`. |
 | Upload fails with HTTP 401 or 403 | The key is wrong, revoked, or missing a permission (see *Privacy and security*). |
 | Upload fails with a connection or timeout error | The Immich URL is unreachable from the machine running ComfyUI. Open it in a browser **on that machine**. The local preview is still saved. |

@@ -36,10 +36,8 @@ const ERRORS = {
   cross_origin: "Refused: settings can only be saved from this ComfyUI page.",
   confirm_url_change: "Changing the Immich URL needs confirmation.",
   key_outside_panel:
-    "Your API key is set outside this panel (an environment variable or the node folder's .env). " +
-    "The panel cannot remove it or change the server it is sent to; change both where the key is set.",
-  url_shadowed:
-    "IMMICH_URL is set as an environment variable, which overrides this panel. Change it where it is set.",
+    "Your API key is still in the node folder's legacy .env, which this panel cannot remove. " +
+    "Delete it there, then save it here.",
   invalid_url: "The Immich URL must be an http(s) URL without a username, password, query or fragment.",
   invalid_api_key: "The API key cannot be blank. Use Clear key to remove it.",
   invalid_value: "Values must be a single line.",
@@ -74,11 +72,9 @@ function settingsPanel() {
     url.value = data.url || "";
     key.value = "";
     key.placeholder = data.key_set ? "•••••••• (set; type a new key to replace it)" : "not set";
-    const env = Object.entries(data.shadowed || {})
-      .filter(([, on]) => on)
-      .map(([name]) => (name === "url" ? "IMMICH_URL" : "IMMICH_API_KEY"));
-    status.textContent = env.length
-      ? `Overridden by environment variables: ${env.join(", ")}. Values saved here apply only where no variable is set.`
+    const legacy = Object.values(data.source || {}).includes("dotenv");
+    status.textContent = legacy
+      ? `Some values still come from the node folder's legacy .env. Save them here to move them to ${data.config_location}.`
       : `Saved in ${data.config_location}.`;
     save.disabled = data.writable === false;
   }

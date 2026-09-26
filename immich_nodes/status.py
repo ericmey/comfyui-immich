@@ -36,11 +36,6 @@ def status_payload():
         "url": config["url"] or None,
         "key_set": bool(config["key"]),
         "source": {"url": config["url_source"], "key": config["key_source"]},
-        # A value from the process environment wins over the panel; say so.
-        "shadowed": {
-            "url": settings.shadowed_by_environment("IMMICH_URL"),
-            "key": settings.shadowed_by_environment("IMMICH_API_KEY"),
-        },
         "writable": config["user_env"] is not None,
         "config_location": settings.config_location(),
     }

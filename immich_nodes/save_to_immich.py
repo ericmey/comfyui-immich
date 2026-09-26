@@ -142,13 +142,13 @@ def _config_paths():
 def resolve_config():
     """Resolve IMMICH_URL / IMMICH_API_KEY and report where each came from.
 
-    Precedence: environment, then ComfyUI's user directory
-    (`user/comfyui-immich.env`, which survives reinstalling the node), then
-    `.env` in the node folder. Sources are "env", "userdir", "dotenv" or "none".
+    Precedence: ComfyUI's user directory (`user/comfyui-immich.env`, written by
+    Settings -> Immich, which survives reinstalling the node), then `.env` in the
+    node folder (a deprecated legacy fallback). Process environment variables
+    are not read (since 0.6.0). Sources are "userdir", "dotenv" or "none".
     """
     user_env, node_env = _config_paths()
     layers = [
-        ("env", os.environ),
         ("userdir", _load_env(user_env) if user_env else {}),
         ("dotenv", _load_env(node_env)),
     ]
@@ -173,7 +173,7 @@ def resolve_config():
 
 
 def _normalize_immich_url(url):
-    """Normalize Immich base URL values from .env or shell environment."""
+    """Normalize Immich base URL values from the settings files."""
     url = (url or "").strip().rstrip("/")
     if url.endswith("/api"):
         url = url[: -len("/api")]
@@ -319,12 +319,11 @@ class SaveToImmich:
         if not config["url"]:
             raise ValueError(
                 "IMMICH_URL not set. Open Settings → Immich in ComfyUI and save your "
-                "Immich URL and API key (or set the IMMICH_URL environment variable)."
+                "Immich URL and API key."
             )
         if not config["key"]:
             raise ValueError(
-                "IMMICH_API_KEY not set. Open Settings → Immich in ComfyUI and save "
-                "your API key (or set the IMMICH_API_KEY environment variable)."
+                "IMMICH_API_KEY not set. Open Settings → Immich in ComfyUI and save your API key."
             )
         return config["url"], config["key"]
 
