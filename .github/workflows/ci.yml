@@ -86,7 +86,7 @@ jobs:
               n for n in names
               if n.startswith(banned) or n.rsplit("/", 1)[-1] == ".env" or n.endswith(".pyc")
           ]
-          required = {"__init__.py", "pyproject.toml", "LICENSE", "README.md", "web/immich_status.js"}
+          required = {"__init__.py", "pyproject.toml", "LICENSE", "README.md", "web/immich_status.js", "web/immich_settings.js"}
           missing = sorted(required - set(names))
           size = sum(i.file_size for i in archive.infolist())
           print(f"{len(names)} files, {size} bytes uncompressed")
