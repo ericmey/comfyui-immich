@@ -216,3 +216,13 @@ def test_no_user_directory_means_no_save(tmp_path):
         code, body = save({"api_key": SENTINEL})
         assert status.status_payload()["writable"] is False
     assert (code, body["error"]) == (503, "no_user_directory")
+
+
+def test_url_edit_refused_when_the_environment_sets_the_url(paths):
+    """Found by Aoi: the save returned 200, changed nothing, and dropped the key."""
+    user_env, _ = paths
+    settings.write_user_settings({"IMMICH_API_KEY": "PANEL-KEY"})
+    with patch.dict(os.environ, {"IMMICH_URL": "https://env.example"}):
+        code, got = save({"url": "https://panel.example", "confirm_url_change": True})
+    assert (code, got["error"]) == (409, "url_shadowed")
+    assert saved(user_env) == {"IMMICH_API_KEY": "PANEL-KEY"}

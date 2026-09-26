@@ -160,3 +160,41 @@ def test_settings_route_saves_same_origin_json_only(tmp_path):
     assert out["form"] == 415
     assert out["ok"][0] == 200 and SENTINEL not in out["ok"][1]
     assert config["url"] == "https://new.example" and config["key"] == SENTINEL
+
+
+def test_settings_body_split_across_tcp_writes_is_read_whole(tmp_path):
+    """Found by Aoi: content.read(n) returns only what is buffered."""
+    import time as _time
+
+    user_env = tmp_path / "user" / "comfyui-immich.env"
+    body = json.dumps({"api_key": SENTINEL}).encode()
+
+    def post_in_two_writes(base):
+        import socket as _socket
+
+        host, port = base.removeprefix("http://").split(":")
+        head = (
+            f"POST /immich/settings HTTP/1.1\r\nHost: {host}:{port}\r\n"
+            f"Origin: {base}\r\nContent-Type: application/json\r\n"
+            f"Content-Length: {len(body)}\r\n\r\n"
+        ).encode()
+        with _socket.create_connection((host, int(port)), timeout=3) as sock:
+            sock.setsockopt(_socket.IPPROTO_TCP, _socket.TCP_NODELAY, 1)
+            sock.sendall(head + body[:10])
+            _time.sleep(0.3)
+            sock.sendall(body[10:])
+            return sock.recv(4096).split(b"\r\n")[0]
+
+    async def calls(base):
+        return await asyncio.to_thread(post_in_two_writes, base)
+
+    with (
+        patch.dict("immich_nodes.save_to_immich.os.environ", {}, clear=True),
+        patch.object(
+            node_mod, "_config_paths", return_value=(str(user_env), str(tmp_path / ".env"))
+        ),
+    ):
+        first_line = _serve_and_call(calls)
+        key = node_mod.resolve_config()["key"]
+    assert first_line.startswith(b"HTTP/1.1 200"), first_line
+    assert key == SENTINEL

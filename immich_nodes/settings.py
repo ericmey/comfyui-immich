@@ -197,6 +197,10 @@ def plan_settings_update(body):
         if url and not valid_url(url):
             return {}, "invalid_url"
         if url != _node.resolve_config()["url"]:
+            # IMMICH_URL in the environment outranks the panel: the save would
+            # change nothing but still drop the key, and report success.
+            if shadowed_by_environment("IMMICH_URL"):
+                return {}, "url_shadowed"
             if body.get("confirm_url_change") is not True:
                 return {}, "confirm_url_change"
             # Never let a new server receive the key that was saved for the old one.
@@ -236,7 +240,8 @@ def save_request(origin, scheme, host, content_type, raw):
         return refuse(400, "invalid_json")
     updates, error = plan_settings_update(body)
     if error:
-        return refuse(409 if error in ("confirm_url_change", "key_outside_panel") else 400, error)
+        conflict = ("confirm_url_change", "key_outside_panel", "url_shadowed")
+        return refuse(409 if error in conflict else 400, error)
     try:
         write_user_settings(updates)
     except SettingsWriteError as exc:

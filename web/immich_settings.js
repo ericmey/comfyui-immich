@@ -38,6 +38,8 @@ const ERRORS = {
   key_outside_panel:
     "Your API key is set outside this panel (an environment variable or the node folder's .env). " +
     "The panel cannot remove it or change the server it is sent to; change both where the key is set.",
+  url_shadowed:
+    "IMMICH_URL is set as an environment variable, which overrides this panel. Change it where it is set.",
   invalid_url: "The Immich URL must be an http(s) URL without a username, password, query or fragment.",
   invalid_api_key: "The API key cannot be blank. Use Clear key to remove it.",
   invalid_value: "Values must be a single line.",

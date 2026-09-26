@@ -35,7 +35,14 @@ def register():
 
     @routes.post("/immich/settings")
     async def _settings(request):
-        raw = await request.content.read(MAX_BODY_BYTES + 1)
+        # read(n) returns whatever is buffered, which can be part of the body;
+        # keep reading until EOF or one byte past the limit.
+        raw = b""
+        while len(raw) <= MAX_BODY_BYTES:
+            chunk = await request.content.read(MAX_BODY_BYTES + 1 - len(raw))
+            if not chunk:
+                break
+            raw += chunk
         code, payload = save_request(
             request.headers.get("Origin", ""),
             request.scheme,
