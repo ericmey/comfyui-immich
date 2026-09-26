@@ -1,6 +1,7 @@
 """The real aiohttp adapter, served over HTTP. Skipped where aiohttp is absent (e.g. CI)."""
 
 import asyncio
+import json
 import sys
 import types
 from unittest.mock import MagicMock, patch
@@ -123,3 +124,39 @@ def test_chunked_body_is_refused_after_one_byte():
         first_line = _serve_and_call(calls)
     assert first_line.startswith(b"HTTP/1.1 400"), first_line
     mock_open.assert_not_called()
+
+
+def test_settings_route_saves_same_origin_json_only(tmp_path):
+    import aiohttp
+
+    user_env = tmp_path / "user" / "comfyui-immich.env"
+    body = {"url": "https://new.example", "confirm_url_change": True, "api_key": SENTINEL}
+
+    async def calls(base):
+        out = {}
+        async with aiohttp.ClientSession() as s:
+            async with s.post(
+                base + "/immich/settings", json=body, headers={"Origin": "https://evil.example"}
+            ) as r:
+                out["cross"] = (r.status, await r.json())
+            async with s.post(
+                base + "/immich/settings", data=json.dumps(body), headers={"Origin": base}
+            ) as r:
+                out["form"] = r.status  # no JSON content type
+            async with s.post(base + "/immich/settings", json=body, headers={"Origin": base}) as r:
+                out["ok"] = (r.status, await r.text())
+        return out
+
+    with (
+        patch.dict("immich_nodes.save_to_immich.os.environ", {}, clear=True),
+        patch.object(
+            node_mod, "_config_paths", return_value=(str(user_env), str(tmp_path / ".env"))
+        ),
+    ):
+        out = _serve_and_call(calls)
+        config = node_mod.resolve_config()
+
+    assert out["cross"] == (403, {"ok": False, "error": "cross_origin"})
+    assert out["form"] == 415
+    assert out["ok"][0] == 200 and SENTINEL not in out["ok"][1]
+    assert config["url"] == "https://new.example" and config["key"] == SENTINEL
