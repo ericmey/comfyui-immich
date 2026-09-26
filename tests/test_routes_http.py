@@ -45,10 +45,10 @@ def _serve_and_call(calls):
 @pytest.fixture(autouse=True)
 def _configured(tmp_path):
     status._last_test[0] = None
-    env = {"IMMICH_URL": "https://immich.example.test", "IMMICH_API_KEY": SENTINEL}
-    with (
-        patch.dict("immich_nodes.save_to_immich.os.environ", env),
-        patch.object(node_mod, "_config_paths", return_value=(None, str(tmp_path / ".env"))),
+    user_env = tmp_path / "configured.env"
+    user_env.write_text(f"IMMICH_URL=https://immich.example.test\nIMMICH_API_KEY={SENTINEL}\n")
+    with patch.object(
+        node_mod, "_config_paths", return_value=(str(user_env), str(tmp_path / ".env"))
     ):
         yield
 
@@ -148,7 +148,6 @@ def test_settings_route_saves_same_origin_json_only(tmp_path):
         return out
 
     with (
-        patch.dict("immich_nodes.save_to_immich.os.environ", {}, clear=True),
         patch.object(
             node_mod, "_config_paths", return_value=(str(user_env), str(tmp_path / ".env"))
         ),
@@ -189,7 +188,6 @@ def test_settings_body_split_across_tcp_writes_is_read_whole(tmp_path):
         return await asyncio.to_thread(post_in_two_writes, base)
 
     with (
-        patch.dict("immich_nodes.save_to_immich.os.environ", {}, clear=True),
         patch.object(
             node_mod, "_config_paths", return_value=(str(user_env), str(tmp_path / ".env"))
         ),

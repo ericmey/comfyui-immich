@@ -16,10 +16,10 @@ URL = "https://immich.example.test"
 @pytest.fixture(autouse=True)
 def _configured(tmp_path):
     status._last_test[0] = None
-    env = {"IMMICH_URL": URL + "/api/", "IMMICH_API_KEY": SENTINEL}
-    with (
-        patch.dict("immich_nodes.save_to_immich.os.environ", env, clear=False),
-        patch.object(node_mod, "_config_paths", return_value=(None, str(tmp_path / ".env"))),
+    user_env = tmp_path / "comfyui-immich.env"
+    user_env.write_text(f"IMMICH_URL={URL}/api/\nIMMICH_API_KEY={SENTINEL}\n")
+    with patch.object(
+        node_mod, "_config_paths", return_value=(str(user_env), str(tmp_path / ".env"))
     ):
         yield
     status._last_test[0] = None
@@ -108,43 +108,47 @@ class TestTestRoute:
         assert payload == {"ok": False, "status": code, "error": error}
 
     def test_not_configured_makes_no_request(self, tmp_path):
-        with (
-            patch.dict("immich_nodes.save_to_immich.os.environ", {"IMMICH_API_KEY": ""}),
-            patch("immich_nodes.save_to_immich.urlopen") as mock_open,
-        ):
+        (tmp_path / "comfyui-immich.env").write_text(f"IMMICH_URL={URL}\n")
+        with patch("immich_nodes.save_to_immich.urlopen") as mock_open:
             _code, payload = status.run_connection_test(False)
         assert payload["error"] == "not_configured"
         mock_open.assert_not_called()
 
 
 class TestConfigPrecedence:
-    def test_env_then_userdir_then_node_dotenv(self, tmp_path):
+    def test_userdir_then_node_dotenv_and_environment_ignored(self, tmp_path):
         user_env = tmp_path / "comfyui-immich.env"
         node_env = tmp_path / ".env"
-        user_env.write_text("IMMICH_URL=https://from-user.test\nIMMICH_API_KEY=user-key\n")
+        user_env.write_text("IMMICH_URL=https://from-user.test\n")
         node_env.write_text("IMMICH_URL=https://from-node.test\nIMMICH_API_KEY=node-key\n")
         with (
             patch.object(node_mod, "_config_paths", return_value=(str(user_env), str(node_env))),
             patch.dict(
-                "immich_nodes.save_to_immich.os.environ",
-                {"IMMICH_URL": "", "IMMICH_API_KEY": "env-key"},
+                "os.environ", {"IMMICH_URL": "https://from-env.test", "IMMICH_API_KEY": "env-key"}
             ),
         ):
             config = node_mod.resolve_config()
         assert (config["url"], config["url_source"]) == ("https://from-user.test", "userdir")
-        assert (config["key"], config["key_source"]) == ("env-key", "env")
+        # No key in the user file: the legacy node .env fills in, never the environment.
+        assert (config["key"], config["key_source"]) == ("node-key", "dotenv")
 
     def test_node_dotenv_is_last_resort(self, tmp_path):
         node_env = tmp_path / ".env"
         node_env.write_text("IMMICH_URL=https://from-node.test\nIMMICH_API_KEY=node-key\n")
+        with patch.object(node_mod, "_config_paths", return_value=(None, str(node_env))):
+            config = node_mod.resolve_config()
+        assert config["url_source"] == config["key_source"] == "dotenv"
+
+    def test_environment_alone_configures_nothing(self, tmp_path):
         with (
-            patch.object(node_mod, "_config_paths", return_value=(None, str(node_env))),
+            patch.object(node_mod, "_config_paths", return_value=(None, str(tmp_path / ".env"))),
             patch.dict(
-                "immich_nodes.save_to_immich.os.environ", {"IMMICH_URL": "", "IMMICH_API_KEY": ""}
+                "os.environ", {"IMMICH_URL": "https://from-env.test", "IMMICH_API_KEY": "k"}
             ),
         ):
             config = node_mod.resolve_config()
-        assert config["url_source"] == config["key_source"] == "dotenv"
+        assert (config["url"], config["key"]) == ("", "")
+        assert config["url_source"] == config["key_source"] == "none"
 
     def test_routes_register_is_a_noop_outside_comfyui(self):
         from immich_nodes import routes

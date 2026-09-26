@@ -12,9 +12,9 @@ no login by default, so the save path is written against the obvious abuses:
 - the API key is write-only: it is never returned, logged or shown;
 - changing the URL needs explicit confirmation AND clears the saved key unless
   a new key is sent with it, so redirecting the URL cannot forward your
-  existing key to someone else's server. If the key is set where the panel
-  cannot remove it (an environment variable or the node folder's .env), the
-  URL cannot be changed and the key cannot be cleared from the panel at all;
+  existing key to someone else's server. If the key is still in the node
+  folder's legacy .env, which the panel cannot remove, the URL cannot be
+  changed and the key cannot be cleared from the panel;
 - the status never reports absolute paths.
 
 This is only as safe as your ComfyUI exposure: anyone who can use your ComfyUI
@@ -57,19 +57,12 @@ def valid_url(value):
     )
 
 
-def shadowed_by_environment(name):
-    """True when a process environment variable overrides what the panel saves."""
-    return bool(os.environ.get(name, "").strip())
-
-
 def key_outside_panel():
     """Name the source of an API key the panel cannot remove, or None.
 
-    Keys in the process environment or the node folder's .env stay in force
-    after the panel deletes its own copy, so they would follow a new URL.
+    A key in the node folder's legacy .env stays in force after the panel
+    deletes its own copy, so it would follow a new URL.
     """
-    if os.environ.get("IMMICH_API_KEY", "").strip():
-        return "env"
     _, node_env = _node._config_paths()
     if _node._load_env(node_env).get("IMMICH_API_KEY", "").strip():
         return "dotenv"
@@ -85,10 +78,13 @@ def config_location():
 
 
 def allowed_origins():
-    """Extra browser origins allowed to save settings. Deliberately not writable from the panel."""
+    """Extra browser origins allowed to save settings (TLS reverse proxy).
+
+    Set by hand as ``IMMICH_ALLOWED_ORIGINS=https://a.example`` in
+    ``user/comfyui-immich.env``. Deliberately not writable from the panel.
+    """
     user_env, node_env = _node._config_paths()
     for values in (
-        os.environ,
         _node._load_env(user_env) if user_env else {},
         _node._load_env(node_env),
     ):
@@ -197,15 +193,11 @@ def plan_settings_update(body):
         if url and not valid_url(url):
             return {}, "invalid_url"
         if url != _node.resolve_config()["url"]:
-            # IMMICH_URL in the environment outranks the panel: the save would
-            # change nothing but still drop the key, and report success.
-            if shadowed_by_environment("IMMICH_URL"):
-                return {}, "url_shadowed"
             if body.get("confirm_url_change") is not True:
                 return {}, "confirm_url_change"
             # Never let a new server receive the key that was saved for the old one.
-            # A key the panel cannot delete would follow the URL, even with a new key
-            # saved here (the environment outranks it), so refuse outright.
+            # A key in the legacy node .env would follow the URL once the panel's
+            # copy is deleted, so refuse until it is moved or removed.
             if key_outside_panel():
                 return {}, "key_outside_panel"
             updates["IMMICH_API_KEY"] = None
@@ -240,7 +232,7 @@ def save_request(origin, scheme, host, content_type, raw):
         return refuse(400, "invalid_json")
     updates, error = plan_settings_update(body)
     if error:
-        conflict = ("confirm_url_change", "key_outside_panel", "url_shadowed")
+        conflict = ("confirm_url_change", "key_outside_panel")
         return refuse(409 if error in conflict else 400, error)
     try:
         write_user_settings(updates)
