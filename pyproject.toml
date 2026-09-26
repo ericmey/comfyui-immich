@@ -25,7 +25,7 @@ Issues = "https://github.com/sourceblender/comfyui-immich/issues"
 Repository = "https://github.com/sourceblender/comfyui-immich"
 
 [tool.comfy]
-PublisherId = "ericmey"
+PublisherId = "sourceblender"
 DisplayName = "Save to Immich"
 
 [project.optional-dependencies]
