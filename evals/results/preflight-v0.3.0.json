@@ -1,0 +1,47 @@
+{
+  "archive_report": {
+    "album": "not_requested",
+    "asset_id": "7fe331df-8044-4411-a41b-b8047896051b",
+    "description": "ok",
+    "errors": [],
+    "filename": "archive-proof_20260926_092805_0000_089a311e.png",
+    "storage_settled": true,
+    "subfolder": "immich-eval",
+    "upload": "ok"
+  },
+  "asset_id": "7fe331df-8044-4411-a41b-b8047896051b",
+  "asset_original_filename": "archive-proof_20260926_092805_0000_089a311e.png",
+  "checks": {
+    "asset_bytes_equal_preview": true,
+    "embedded_graph_equal_submitted": true,
+    "history_archive_receipt": true,
+    "history_preview_receipt": true,
+    "image_dimensions": true,
+    "immich_asset_id": true,
+    "immich_description": true,
+    "queued": true
+  },
+  "finished_utc": "2026-09-26T13:28:07.012938+00:00",
+  "fixture_sha256": "b7a324b743e6422255067c8f21af951281a5c2a48f1d1e46c8ea202e6eeb481f",
+  "history_status": "success",
+  "immich_original_sha256": "7c8cba665219b1c2ccd0a30d76dfebb61b7da4002d088b35a6161a24c6bb4d58",
+  "installed_node_ref_operator_declared": "a2cd0ec",
+  "limits": [
+    "The installed node ref is operator-declared; server code bytes were not attested.",
+    "One synthetic image is a path proof, not a reliability rate or a clean-install test."
+  ],
+  "passed": true,
+  "preview_report": {
+    "asset_id": "7fe331df-8044-4411-a41b-b8047896051b",
+    "filename": "archive-proof_20260926_092805_0000_089a311e.png",
+    "subfolder": "immich-eval",
+    "type": "output"
+  },
+  "preview_sha256": "7c8cba665219b1c2ccd0a30d76dfebb61b7da4002d088b35a6161a24c6bb4d58",
+  "prompt_id": "5686a8b5-70ad-4390-a23e-5cc803be1543",
+  "run_id": "c23e3034264a",
+  "runner_sha256": "8b0912e51d9ac17b39fc8377bb8a4a21035ace741e346c78b17fdd9563b4926f",
+  "schema": "immich-archive-proof-v1",
+  "started_utc": "2026-09-26T13:28:05.785158+00:00",
+  "submitted_graph_sha256": "c287e525e81edabf79861f1e875225451f203ffbd3fa10cfd798d719ad593542"
+}

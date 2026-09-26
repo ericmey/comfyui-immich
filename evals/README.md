@@ -31,6 +31,17 @@ The ComfyUI node itself needs its own configured upload key. The readback key
 may have a different scope. The result is a pass only when every check in the
 JSON receipt is true and no run error was recorded. Preserve failures too.
 
+## Preliminary run
+
+[`results/preflight-v0.3.0.json`](results/preflight-v0.3.0.json) is a successful
+eight-check run against the private ComfyUI host's installed `a2cd0ec` build
+(v0.3.0). The installed git head was read back separately from that host. The
+ComfyUI history reported one uploaded asset and successful description, and
+the downloaded preview matched Immich's original PNG byte-for-byte. The
+embedded graph, dimensions, asset ID, and description matched the submission.
+This establishes the proof path on **v0.3.0**; it does not test the changes
+waiting in PRs #16 and #17.
+
 **Boundary:** the runner executes the deployed ComfyUI node. A source checkout
 or green unit test does not prove those bytes are deployed. A separate
 failure/retry proof and the new Settings panel still need their own receipts.
