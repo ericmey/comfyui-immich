@@ -4,11 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "comfyui-immich"
-version = "0.5.0"
+version = "0.5.1"
 description = "ComfyUI custom nodes for Immich integration — upload, metadata, album management"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
+classifiers = ["Operating System :: OS Independent"]
 requires-python = ">=3.10"
 authors = [
     {name = "Eric Mey"},
@@ -23,10 +24,14 @@ dependencies = [
 Homepage = "https://github.com/sourceblender/comfyui-immich"
 Issues = "https://github.com/sourceblender/comfyui-immich/issues"
 Repository = "https://github.com/sourceblender/comfyui-immich"
+Documentation = "https://github.com/sourceblender/comfyui-immich#readme"
+"Bug Tracker" = "https://github.com/sourceblender/comfyui-immich/issues"
 
 [tool.comfy]
 PublisherId = "sourceblender"
 DisplayName = "Save to Immich"
+Icon = "https://raw.githubusercontent.com/sourceblender/comfyui-immich/main/docs/images/icon.png"
+Banner = "https://raw.githubusercontent.com/sourceblender/comfyui-immich/main/docs/images/banner.png"
 
 [project.optional-dependencies]
 dev = [
