@@ -1,0 +1,27 @@
+{
+  "1": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "example.png"
+    },
+    "_meta": {
+      "title": "Load Image"
+    }
+  },
+  "2": {
+    "class_type": "SaveToImmich",
+    "inputs": {
+      "images": [
+        "1",
+        0
+      ],
+      "character": "",
+      "description": "comfyui-immich example upload",
+      "album_id": "",
+      "filename_prefix": "immich-example"
+    },
+    "_meta": {
+      "title": "Save to Immich"
+    }
+  }
+}

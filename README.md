@@ -13,69 +13,69 @@ Custom nodes for [ComfyUI](https://github.com/comfyanonymous/ComfyUI) that integ
 - Per-image error handling — one failure doesn't crash the batch
 - Zero extra dependencies — uses only packages already in ComfyUI (PIL, numpy, torch)
 
-## Installation
+## Install
 
-Clone into your ComfyUI `custom_nodes` directory:
+**From ComfyUI-Manager:** open **Custom Nodes Manager**, search for **Save to Immich**, install, and restart ComfyUI. It is published on the [Comfy Registry](https://registry.comfy.org/nodes/comfyui-immich) as `comfyui-immich`.
+
+**With comfy-cli:** `comfy node install comfyui-immich`
+
+**Manually:** clone into your ComfyUI `custom_nodes` directory and restart ComfyUI:
 
 ```bash
 cd /path/to/ComfyUI/custom_nodes
-git clone https://github.com/ericmey/comfyui-immich.git
+git clone https://github.com/sourceblender/comfyui-immich.git
 ```
 
-Restart ComfyUI. The node will appear under **image/immich** in the node menu.
+The node appears under **image/immich** in the node menu. It needs no packages beyond what ComfyUI already ships.
 
-## Configuration
+## Configure
 
-Create a `.env` file in the node directory with your Immich credentials:
+**In ComfyUI (recommended).** Open **Settings** (the gear, bottom left) → **Immich**, then fill in:
 
-```bash
-cd custom_nodes/comfyui-immich
-cp .env.example .env
-```
+- **Immich URL**: the address you open Immich at, **without `/api`** (for example `https://photos.example.com`).
+- **API key**: **write-only**. It is saved on the server and never shown again; type a new one to replace it, or **Clear key**.
 
-Edit `.env`:
+Click **Save**, then **Test connection**, which checks only the saved settings. Changing the URL asks for confirmation and **clears the saved key unless you enter a new one with it**, so your key is never sent to a server you did not choose. Settings are stored in `<ComfyUI user directory>/comfyui-immich.env`, so they survive updating or reinstalling the node.
+
+![Immich settings in ComfyUI](docs/images/settings-panel.png)
+
+> **Anyone who can use your ComfyUI page can change these settings.** ComfyUI has no login by default, so keep it private. The key is never sent back to the browser.
+
+- **Behind an HTTPS reverse proxy?** The panel only accepts saves from ComfyUI's own origin. Set `IMMICH_ALLOWED_ORIGINS` (comma-separated, exact origins such as `https://comfy.example.com`) in the environment or a `.env` file; otherwise saving is refused with `cross_origin`.
+- **URL set by an environment variable?** The panel says so and refuses to change it (`url_shadowed`), because the variable would win anyway. Change it where it is set.
+- **Key set in the environment or the node folder's `.env`?** The panel won't change the URL or clear the key (`key_outside_panel`), so a key can never follow a new URL behind your back. Change both where the key lives.
+
+**Alternative: environment variables or a `.env` file.** These still work. `IMMICH_URL` and `IMMICH_API_KEY` are read from the first place that has them:
+
+1. **Environment variables** of the process running ComfyUI (these override the panel).
+2. **`<ComfyUI user directory>/comfyui-immich.env`**: what the panel writes.
+3. **`.env` in this node's folder**: copy `.env.example` to `.env`:
 
 ```env
 IMMICH_URL=https://your-immich-instance.com
 IMMICH_API_KEY=your-api-key-here
 ```
 
-The `.env` file is gitignored and persists across `git pull` updates.
+The node folder's `.env` is gitignored, but a reinstall that replaces the folder (for example through ComfyUI-Manager) does **not** keep it. Prefer the panel or environment variables.
 
-### Where the configuration can live
-
-The node reads `IMMICH_URL` and `IMMICH_API_KEY` from the first place that has
-them:
-
-1. **Environment variables** of the process running ComfyUI.
-2. **`ComfyUI/user/comfyui-immich.env`** (same format as `.env`). Recommended:
-   it lives outside the node folder, so it survives reinstalling or replacing
-   the node.
-3. **`.env` in this node's folder**, as above.
-
-### Settings and status
+### Status from the node
 
 Right-click the **Save to Immich** node:
 
-- **Immich: connection status** shows the server URL, whether an API key is
-  set (never the key itself), and which file or variable each came from.
-- **Immich: test connection** makes one request to the saved server with the
-  saved key and tells you whether it works (for example "key rejected" or
-  "server unreachable").
+- **Immich: connection status** shows the server URL, whether an API key is set (never the key itself), and where each came from.
+- **Immich: test connection** makes one request to the saved server with the saved key and tells you whether it works (for example "key rejected" or "server unreachable").
 
-The panel is **read-only on purpose**. ComfyUI has no login by default, so
-anything a node lets you change from the browser could be changed by anyone
-who can reach your ComfyUI, including pointing uploads at a different server.
-To change the settings, edit the file or environment variable and restart
-ComfyUI.
+### Getting an Immich API key
 
-### Getting an Immich API Key
+1. Open your Immich instance in a browser.
+2. Go to **Account Settings** (click your avatar).
+3. Scroll to **API Keys** → **New API Key**.
+4. Give it a name (for example "ComfyUI") and create it.
+5. Paste the key into **Settings → Immich → API key** and click **Save**.
 
-1. Open your Immich instance in a browser
-2. Go to **User Settings** (click your avatar → Account Settings)
-3. Scroll to **API Keys** → **New API Key**
-4. Give it a name (e.g., "ComfyUI") and create
-5. Copy the key into your `.env` file
+## Try the example
+
+Open `examples/immich-save-example-api.json` in ComfyUI (**Workflow → Open**, or drag the file onto the canvas). It is two nodes: **Load Image** feeding **Save to Immich**. It uses `example.png`, which ComfyUI ships in its `input` folder, so no image model is needed. Configure the connection above, then **Queue**. The image appears in Immich with the description "comfyui-immich example upload", and the node's receipt shows in the queue history.
 
 ## Nodes
 
@@ -175,17 +175,9 @@ Recovery needs the original file. A PNG with no embedded graph, an unreadable
 one, or one holding several archive nodes is refused with a message on stderr
 and exit code 1 rather than archiving with no metadata.
 
-## Updating the installation
+## Updating
 
-```bash
-cd /path/to/ComfyUI/custom_nodes/comfyui-immich
-git pull
-```
-
-Your `.env` file is preserved — it's in `.gitignore`. A reinstall that
-replaces the whole folder (for example through a package manager) does
-**not** keep it; back it up first, or set `IMMICH_URL` and `IMMICH_API_KEY`
-as environment variables instead.
+Update from ComfyUI-Manager, or with `comfy node update comfyui-immich`, or `git pull` in the node folder for a manual install. Settings saved from the panel live in the ComfyUI user directory, so updates and reinstalls keep them.
 
 ## Privacy and security
 
@@ -193,9 +185,13 @@ as environment variables instead.
   full ComfyUI workflow and prompt, exactly like the built-in SaveImage node.
   Anyone who can download the original from Immich (for example through a
   shared album or link) can read your prompts and reload your graph.
-- **The API key is never stored in a workflow.** It is read from the
-  environment or `.env`, not from a node input, so it does not end up in
-  saved workflows or in PNG metadata.
+- **The API key is never stored in a workflow.** It lives in the settings
+  file, an environment variable or `.env`, never in a node input, so it does
+  not end up in saved workflows or in PNG metadata. The settings panel never
+  sends it back to the browser.
+- **Your key does not follow a redirect.** The node refuses any redirect from
+  Immich instead of following it, so the key is never forwarded to another
+  host. Save the final address as the URL.
 - **Use a dedicated key.** Create a key just for ComfyUI so you can revoke it
   on its own. If your Immich version lets you restrict a key, it needs to
   upload assets, read and update them (for the description), and add them to
@@ -215,12 +211,28 @@ as environment variables instead.
 
 | Symptom | Likely cause |
 |---|---|
-| `IMMICH_URL not set` / `IMMICH_API_KEY not set` | Nothing configured in any of the three places above. Create `ComfyUI/user/comfyui-immich.env` (or `.env` here), then restart ComfyUI. Right-click the node, then **Immich: connection status**, to see what it found. |
-| Upload fails with a redirect error | Immich (or a proxy) redirected the request. Set `IMMICH_URL` to the final address, for example `https://` instead of `http://`. |
+| `IMMICH_URL not set` / `IMMICH_API_KEY not set` | Nothing is configured. Open **Settings → Immich**, save the URL and key, and click **Test connection**. |
+| Saving in Settings says `cross_origin` | You reach ComfyUI through a reverse proxy. Set `IMMICH_ALLOWED_ORIGINS` (see *Configure*). |
+| Saving in Settings says `url_shadowed` or `key_outside_panel` | The URL or key is set by an environment variable or the node folder's `.env`. Change it there. |
+| Upload fails with a redirect error | Immich (or a proxy) redirected the request. Save the final address as the URL, for example `https://` instead of `http://`. |
 | Upload fails with HTTP 401 or 403 | The key is wrong, revoked, or missing a permission (see *Privacy and security*). |
-| Upload fails with a connection or timeout error | `IMMICH_URL` is unreachable from the machine running ComfyUI. Open it in a browser **on that machine**. The local preview is still saved. |
+| Upload fails with a connection or timeout error | The Immich URL is unreachable from the machine running ComfyUI. Open it in a browser **on that machine**. The local preview is still saved. |
 | `album` receipt is `unconfirmed` | Immich returned success without a per-asset body, often because a proxy strips it. Check the album in Immich. |
 | Image in Immich but no description | Check the `description` stage in the receipt, then use `retry_archive` with `--asset-id` to retry only the metadata. |
+
+## Tests
+
+The offline suite runs without ComfyUI or a live Immich. With [uv](https://docs.astral.sh/uv/):
+
+```sh
+uv run --extra dev pytest
+```
+
+Or with pip: `pip install -e ".[dev]"`, then `python -m pytest`. The settings-route tests serve the real handlers over HTTP and need `aiohttp` (part of the dev extra, and already provided by ComfyUI).
+
+## Releasing (maintainers)
+
+Merging to `main` never publishes. To release, bump `[project].version` in `pyproject.toml` in a pull request, then publish a GitHub release tagged `v<version>` on `main`. The release workflow runs the full CI, refuses a tag that does not match the version, and publishes to the Comfy Registry. A pre-release does not publish.
 
 ## License
 
