@@ -2,3 +2,4 @@
 tests/
 .github/
 .claude/
+evals/

@@ -59,3 +59,39 @@ jobs:
 
       - name: Run tests
         run: pytest -q
+
+  # Build the exact archive `comfy node publish` uploads and inspect it, so a
+  # .comfyignore mistake fails the PR instead of shipping to every install.
+  package:
+    name: Package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Check Registry package contents
+        run: |
+          python -m pip install "comfy-cli==1.21.0"
+          comfy --skip-prompt --no-enable-telemetry node pack
+          python - <<'PY2'
+          import zipfile
+
+          archive = zipfile.ZipFile("node.zip")
+          names = archive.namelist()
+          banned = ("evals/", "tests/", ".github/", ".claude/", "__pycache__/")
+          leaked = [
+              n for n in names
+              if n.startswith(banned) or n.rsplit("/", 1)[-1] == ".env" or n.endswith(".pyc")
+          ]
+          required = {"__init__.py", "pyproject.toml", "LICENSE", "README.md", "web/immich_status.js", "web/immich_settings.js"}
+          missing = sorted(required - set(names))
+          size = sum(i.file_size for i in archive.infolist())
+          print(f"{len(names)} files, {size} bytes uncompressed")
+          assert not leaked, f"must not ship: {leaked}"
+          assert not missing, f"missing from package: {missing}"
+          assert any(n.startswith("immich_nodes/") for n in names), "immich_nodes/ missing"
+          assert size < 5_000_000, f"package unexpectedly large: {size} bytes"
+          PY2
