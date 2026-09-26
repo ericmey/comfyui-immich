@@ -10,6 +10,7 @@ Custom nodes for [ComfyUI](https://github.com/comfyanonymous/ComfyUI) that integ
   does not eat the render (the UI and API clients both read this file)
 - Optional character label, album assignment, and description tagging
 - Immich v3-compatible upload payloads
+- End-to-end archive and recovery proofs against a real Immich, with receipts (see *Evaluation*)
 - Per-image error handling — one failure doesn't crash the batch
 - Zero extra dependencies — uses only packages already in ComfyUI (PIL, numpy, torch)
 
@@ -174,6 +175,15 @@ proxy is stripping the response body" rather than a failed archive.
 Recovery needs the original file. A PNG with no embedded graph, an unreadable
 one, or one holding several archive nodes is refused with a message on stderr
 and exit code 1 rather than archiving with no metadata.
+
+## Evaluation
+
+Two mechanical proofs live in [`evals/`](evals/). Each run writes a JSON receipt with its input and runner hashes, every check, and its limits. Receipts never include keys or server URLs.
+
+- **Archive proof, 8/8 checks passed** ([`archive-v0.5.0.json`](evals/results/archive-v0.5.0.json)). A frozen, GPU-free `EmptyImage` → Save to Immich graph was queued on a live ComfyUI host running the released v0.5.0 (`9d17e03`). ComfyUI's history reported one upload and one preview. The preview and the original PNG that Immich stored were byte-identical, and the embedded graph, dimensions, asset ID and description all matched.
+- **Recovery proof, 6/6 checks passed** ([`recovery-v0.5.0-source.json`](evals/results/recovery-v0.5.0-source.json)). An upload failure was induced against a refused endpoint, then the **same PNG bytes** were retried against a real Immich without re-rendering. The retry created a distinct asset whose original bytes and description matched. This proof exercises the `retry_archive` module from the v0.5.0 source, not a deployed node.
+
+**Scope:** one synthetic image and one induced failure. These runs show the archive path works end to end on a real server; they do not measure a success rate. Earlier v0.3.0 and v0.4.2 receipts remain in `evals/results/` as dated comparisons.
 
 ## Updating
 
