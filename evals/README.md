@@ -42,6 +42,32 @@ embedded graph, dimensions, asset ID, and description matched the submission.
 This establishes the proof path on **v0.3.0**; it does not test the changes
 waiting in PRs #16 and #17.
 
+## Failure and recovery
+
+`fixtures/archive-proof.png` is a real ComfyUI preview with an embedded graph.
+`run_recovery_proof.py` adds a unique description marker to its metadata, then
+passes those **same PNG bytes** to `retry_archive.retry` twice. The first call
+uses a deliberately refused local endpoint and must return an `upload` failure.
+The second uses the configured Immich service and must return an asset ID. The
+runner reads that asset back and compares its original bytes and description
+with the trial PNG. It records the base fixture hash, trial hash, run ID, each
+stage receipt, and all checks; no GPU render happens between attempts.
+
+```bash
+IMMICH_WRITE_KEY="..." IMMICH_READ_KEY="..." \
+  .venv/bin/python evals/run_recovery_proof.py \
+  --immich-url https://YOUR_IMMICH_HOST \
+  --source-ref COMMIT_SHA \
+  --output /tmp/immich-recovery-proof.json
+```
+
+[`results/preflight-recovery-v0.4.2.json`](results/preflight-recovery-v0.4.2.json)
+passes six checks against the real Immich service, using the checkout at
+`b22de49` (v0.4.2). The recovered asset ID differed from the earlier archive
+proof asset. This exercises the local retry module, **not** a deployed ComfyUI
+node, and the initial failure is induced. It does not establish reliability
+under a real outage or the changes waiting in PRs #16/#17.
+
 **Boundary:** the runner executes the deployed ComfyUI node. A source checkout
 or green unit test does not prove those bytes are deployed. A separate
-failure/retry proof and the new Settings panel still need their own receipts.
+post-PR archive run and the new Settings panel still need their own receipts.
