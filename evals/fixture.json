@@ -1,0 +1,8 @@
+{
+  "width": 32,
+  "height": 32,
+  "batch_size": 1,
+  "color": 13382451,
+  "filename_prefix": "immich-eval/archive-proof",
+  "description_prefix": "comfyui-immich archive proof"
+}

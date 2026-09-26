@@ -1,0 +1,40 @@
+{
+  "asset_id": "680db608-4021-49f7-89d4-cc8249a89cf0",
+  "base_fixture_sha256": "7c8cba665219b1c2ccd0a30d76dfebb61b7da4002d088b35a6161a24c6bb4d58",
+  "checks": {
+    "asset_id_readback": true,
+    "description_readback": true,
+    "induced_upload_failure": true,
+    "original_equals_trial_png": true,
+    "retry_description": true,
+    "retry_uploaded": true
+  },
+  "failed_attempt": {
+    "album": "not_requested",
+    "description": "not_attempted",
+    "filename": "archive-proof-retry.png",
+    "upload": "failed"
+  },
+  "finished_utc": "2026-09-26T13:33:09.771355+00:00",
+  "limits": [
+    "The first failure is induced by a refused local endpoint, not an observed outage.",
+    "This runs the checkout's retry module directly, not a deployed ComfyUI node."
+  ],
+  "original_sha256": "944e25328b5c1c9ebfa168ebb662d25290ddccff76894b89c774109a0041d3e0",
+  "passed": true,
+  "retry_report": {
+    "album": "not_requested",
+    "asset_id": "680db608-4021-49f7-89d4-cc8249a89cf0",
+    "description": "ok",
+    "errors": [],
+    "filename": "archive-proof-retry.png",
+    "storage_settled": true,
+    "upload": "ok"
+  },
+  "run_id": "eedb8d5f6b4b",
+  "runner_sha256": "5d6b00d18c9d71cc00d0943450f51654d84ec153b66b5d9530c22ff4f0119656",
+  "schema": "immich-recovery-proof-v1",
+  "source_ref_operator_declared": "b22de49",
+  "started_utc": "2026-09-26T13:33:09.173423+00:00",
+  "trial_png_sha256": "944e25328b5c1c9ebfa168ebb662d25290ddccff76894b89c774109a0041d3e0"
+}
