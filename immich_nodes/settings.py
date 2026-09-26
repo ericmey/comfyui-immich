@@ -116,10 +116,7 @@ def write_user_settings(updates):
             current.pop(key, None)
 
     os.makedirs(os.path.dirname(user_env), exist_ok=True)
-    body = (
-        "# Written by the Save to Immich settings panel. "
-        "Environment variables override these values.\n"
-    )
+    body = "# Written by the Save to Immich settings panel (Settings -> Immich).\n"
     body += "".join(f"{key}={value}\n" for key, value in current.items())
     tmp = os.path.join(os.path.dirname(user_env), f".{os.path.basename(user_env)}.tmp")
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
