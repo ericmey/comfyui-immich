@@ -31,7 +31,7 @@ The ComfyUI node itself needs its own configured upload key. The readback key
 may have a different scope. The result is a pass only when every check in the
 JSON receipt is true and no run error was recorded. Preserve failures too.
 
-## Preliminary run
+## Archive results
 
 [`results/preflight-v0.3.0.json`](results/preflight-v0.3.0.json) is a successful
 eight-check run against the private ComfyUI host's installed `a2cd0ec` build
@@ -41,6 +41,17 @@ the downloaded preview matched Immich's original PNG byte-for-byte. The
 embedded graph, dimensions, asset ID, and description matched the submission.
 This establishes the proof path on **v0.3.0**; it does not test the released
 v0.5.0 build.
+
+[`results/archive-v0.5.0.json`](results/archive-v0.5.0.json) is the deployed
+v0.5.0 run. The private ComfyUI host's checkout was read back as release commit
+`9d17e03`, its service started after the checkout, and its new Settings status
+route responded before the run; the readback is preserved in
+[`results/deploy-state-v0.5.0.json`](results/deploy-state-v0.5.0.json).
+All eight checks passed: ComfyUI history
+reported one upload and preview, the preview and Immich original were byte
+equal, and the embedded graph, dimensions, asset ID, and description matched.
+This proves that host's archive path for one synthetic image. It does not test
+a clean Manager install or the Settings save flow.
 
 ## Failure and recovery
 
@@ -74,7 +85,7 @@ Its retry returned a distinct real Immich asset with byte-equal original PNG
 and the expected description. It still exercises a **source checkout**, so it
 cannot establish what the installed v0.5.0 node does in ComfyUI.
 
-**Boundary:** the runner executes the deployed ComfyUI node. A source checkout
-or green unit test does not prove those bytes are deployed. The v0.5.0 archive
-run awaits a host installation; Eric's Settings and Manager experience still
-needs his hands-on test.
+**Boundary:** the archive runner executes the deployed ComfyUI node; the
+recovery runner executes the checkout's retry module. Neither proves a success
+rate from one case. Eric's Settings and Manager experience still needs his
+hands-on test.

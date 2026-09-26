@@ -1,0 +1,23 @@
+{
+  "git_head": "9d17e039dff18d27b9aaf67f6eca566dcde94398",
+  "limits": [
+    "This is a host checkout and process-timing readback, not a hash of imported module bytes."
+  ],
+  "schema": "immich-deploy-state-v1",
+  "service_start_local": "2026-09-26T13:47:54",
+  "service_started_after_source": true,
+  "settings_key_set": true,
+  "settings_sources": {
+    "key": "userdir",
+    "url": "userdir"
+  },
+  "settings_status_fields": [
+    "config_location",
+    "key_set",
+    "shadowed",
+    "source",
+    "url",
+    "writable"
+  ],
+  "source_mtime_local": "2026-09-26T13:47:46.934652"
+}
